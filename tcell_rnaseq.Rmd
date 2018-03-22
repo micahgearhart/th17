@@ -1,0 +1,408 @@
+---
+title: "JY177 RNA-Seq"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Load Libraries
+```{r libraries,eval=T,results='hide',message=FALSE,warning=FALSE}
+library("magrittr")
+library("dplyr")
+library("stringr")
+library("ggplot2")
+library("DESeq2")
+library("heatmaply")
+
+source("custom_plotPCA.R")
+```
+
+# Download Annotations
+```{r gencode_annotations,eval=F}
+#Download one of the following
+#download.file("ftp://ftp.sanger.ac.uk/pub/gencode/Gencode_mouse/release_M16/gencode.vM16.annotation.gff3.gz",destfile="gencode.vM16.annotation.gff3.gz")
+#R.utils::gunzip("gencode.vM16.annotation.gff3.gz")
+
+#download.file("ftp://ftp.sanger.ac.uk/pub/gencode/Gencode_mouse/release_M16/gencode.vM16.basic.annotation.gff3.gz",destfile="gencode.vM16.basic.annotation.gff3.gz")
+#R.utils::gunzip("gencode.vM16.basic.annotation.gff3.gz")
+
+# Kundaje Blacklist
+#download.file("http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/mm10-mouse/mm10.blacklist.bed.gz",destfile="mm10.blacklist.bed.gz")
+#R.utils::gunzip("mm10.blacklist.bed.gz")
+
+#point to file downloaded above
+gff3_file<-"gencode.vM16.annotation.gff3"
+
+txdb<-makeTxDbFromGFF(gff3_file,format="gff3")
+seqlevelsStyle(txdb)<-"NCBI"
+
+#get symbols and biotypes from gff3 file that is not in txdb
+M16<-import(gff3_file,format="gff3")
+seqlevelsStyle(M16)<-"NCBI"
+symbols<-as.data.frame(mcols(M16))
+symbols<-symbols[symbols$type=="gene",c("gene_id","gene_name","gene_type")]
+symbols$chr<-as.character(seqnames(M16[match(symbols$gene_id,M16$gene_id)]))
+symbols$gene_id<-substr(symbols$gene_id,1,18)
+table(symbols$chr)
+
+#add symbol & biotype to a transcripts GRanges object
+
+transcripts<-transcripts(txdb,columns=c("gene_id","tx_name"))
+transcripts$gene_id<-substr(unlist(transcripts$gene_id),1,18)
+names(transcripts)<-transcripts$tx_name
+mcols(transcripts)<-data.frame(gene_id=transcripts$gene_id,stringsAsFactors = F)
+transcripts$symbol<-symbols$gene_name[match(transcripts$gene_id,symbols$gene_id)]
+transcripts$biotype<-symbols$gene_type[match(transcripts$gene_id,symbols$gene_id)]
+
+#any more from MGI table?
+#MGI<-read.table("gencode.vM16.metadata.MGI",header=F,stringsAsFactors = F)
+#summary(idx<-match(names(transcripts),MGI$V1))
+#transcripts$MGI<-MGI[idx,"V2"]
+#table(transcripts$symbol==transcripts$MGI,useNA="always")
+#transcripts[which(!transcripts$symbol==transcripts$MGI)]
+#transcripts$MGI[transcripts$symbol==transcripts$MGI)]
+
+bl_mm10<-import("mm10.blacklist.bed")
+seqlevelsStyle(bl_mm10)<-"NCBI"
+
+save(symbols,transcripts,bl_mm10,file="symbols_M16.rdata")
+```
+
+# Load Data
+```{r}
+#load(url("https://s3.msi.umn.edu/jenkinsm/featureCounts_Gencode-M16_q0_Sun_Jan_21_2018_1932.rdata"))
+#load(url("https://s3.msi.umn.edu/gearhart/mgi91.rdata"))
+
+# with PCR duplicates
+#load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Feb_06_2018_0947.rdata"))
+
+#with duplicates removed 
+load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata"))
+#load(url("https://s3.msi.umn.edu/gearhart/symbols_M16.rdata"))
+```
+
+# Define Functions
+```{r}
+gg_plotCounts<-function(x="ENSMUSG00000028150",d=dds_subset) {
+  if (substr(x,1,7)=="ENSMUSG") {
+   # title<-mgi[grep(x,mgi$ensembl_gene_id),"mgi_symbol"]
+    title<-symbols[grep(x,symbols$gene_id),"gene_name"]
+  } else {
+    title<-x
+    #x<-mgi[grep(paste0("^",title,"$"),mgi$mgi_symbol),"ensembl_gene_id"]
+    x<-symbols[grep(paste0("^",title,"$"),symbols$gene_name),"gene_id"]
+  }
+
+  plotCounts(d,x,intgroup=c("project","celltype","genotype"),returnData=T) %>%
+    ggplot(aes(x=genotype, y=count,color=project)) +
+    geom_point(position=position_jitter(w=0.1,h=0)) + ggtitle(paste0(x,":  ",title)) +
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.35,color="blue",size=0.2) +
+    expand_limits(x=0, y = 0) + xlab("") +
+    facet_grid(~celltype) +
+    theme(legend.position="none") +
+    theme_bw()
+}
+```
+
+# Download GO Data from MGI
+```{r}
+mgi_go<-readr::read_delim("../../zarkowe0/granulosa_culture/gene_association.mgi",delim="\t",skip=24,col_names=F)
+
+colnames(mgi_go)<-c("DB","DB Object ID","Mgi Symbol","Qualifier","GO ID","DB:eEference","Evidence Code",
+                    "WithorFrom","Aspect","DB Object Name","DB Object Syn","DB Object Type","Taxon","Date","Assigned By",
+                    "Annotation Extension","Gene Product Form ID")
+table(mgi_go$`Evidence Code`)
+#high quality?  
+#dim(mgi_go<-mgi_go[mgi_go$`Evidence Code` %in% c("EXP","IDA","IEP","IGI","IMP","IPI","ISS","TAS"),])
+
+summary(idx<-match(mgi_go$`Mgi Symbol`,mcols(transcripts)$symbol))
+mgi_go$ensembl<-mcols(transcripts)$gene_id[idx]
+
+dim(mgi_go<-mgi_go[!is.na(mgi_go$ensembl),c("ensembl","GO ID")])
+
+#subset to BP
+mgi_goterms<-readr::read_delim("../../zarkowe0/granulosa_culture/go_terms.mgi",delim="\t",col_names=F)
+colnames(mgi_goterms)<-c("Category","GO ID","Description")
+table(mgi_goterms$Category)
+dim(mgi_BP_goterms<-mgi_goterms[mgi_goterms$Category=="Biological Process","GO ID"])
+dim(mgi_go<-mgi_go[mgi_go$`GO ID` %in% mgi_BP_goterms$`GO ID`,])
+
+
+#dim(mgi_go<-mgi_go[mgi_go$ensembl %in% expressed_genes,])
+
+
+#remove duplicated entries (possibly from multiple lines of evidence)
+dim(mgi_go<-mgi_go[!duplicated(mgi_go),])
+
+mgi_go.list<-split(mgi_go$`GO ID`,mgi_go$ensembl)
+
+#add term length to mgi_goterms
+mgi_go.listByTerm<-split(mgi_go$ensembl,mgi_go$`GO ID`)
+term_length<-sapply(mgi_go.listByTerm,length)
+mgi_goterms$length<-term_length[mgi_goterms$`GO ID`]
+
+as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[[symbols[grep("^Dmrt1$",symbols$gene_name),"gene_id"]]],])
+
+geneToGOIDs<-function(x) {
+  terms<-mgi_go.list[[symbols[grep(x,symbols$gene_name),"gene_id"]]]
+  as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% terms,])
+}
+
+#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000024837"]],])
+#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000050397"]],])
+
+
+mgi[mgi$ensembl_gene_id %in% mgi_go[grep("GO:0030217",mgi_go$`GO ID`),"ensembl"]$ensembl,] #T Cell Differentiotion
+
+#bias.data
+#bd<-sum(width(reduce(ens87)))
+bd<-mcols(dds)$basepairs
+names(bd)<-rownames(dds)
+bd["ENSMUSG00000024837"]
+
+
+bd<-bd[names(bd) %in% expressed_genes]
+head(bd)
+
+#Overlap
+degs_overlap<-as.numeric(expressed_genes %in% rownames(res_culture_dmrt1) & expressed_genes %in% rownames(res_culture_sox9))
+names(degs_overlap)<-expressed_genes
+table(degs_overlap)
+go_wall_overlap<-goseq(nullp(degs_overlap,bias.data=bd),gene2cat=mgi_go.list)
+go_wall_overlap[1:20,c("category","term","numDEInCat","numInCat")]
+
+#Sox9
+degs_sox9<-as.numeric(expressed_genes %in% rownames(res_culture_sox9) & !expressed_genes %in% rownames(res_culture_dmrt1))
+names(degs_sox9)<-expressed_genes
+table(degs_sox9)
+go_wall_sox9<-goseq(nullp(degs_sox9,bias.data=bd),gene2cat=mgi_go.list)
+go_wall_sox9[1:20,c("category","term","numDEInCat","numInCat")]
+
+#Dmrt1
+degs_dmrt1<-as.numeric(expressed_genes %in% rownames(res_culture_dmrt1) & !expressed_genes %in% rownames(res_culture_sox9))
+names(degs_dmrt1)<-expressed_genes
+table(degs_dmrt1)
+go_wall_dmrt1<-goseq(nullp(degs_dmrt1,bias.data=bd),gene2cat=mgi_go.list)
+go_wall_dmrt1[1:20,c("category","term","numDEInCat","numInCat")]
+
+head(GO.wall,20) %>%
+  dplyr::mutate(term=factor(term,levels=rev(term))) %>%
+ggplot(aes(x=term,y=-log10(over_represented_pvalue))) +
+  geom_bar(stat="identity",fill="red") +
+  coord_flip() + xlab("") +
+  theme_bw() 
+
+listGO<-function(goid,degs=degs) {
+  print(mgi_goterms[grep(goid,mgi_goterms$`GO ID`),])
+  tg<-mgi_go[grep(goid,mgi_go$`GO ID`),"ensembl"]
+  idx<-match(tg$ensembl,mgi$ensembl_gene_id)
+  tg$symbol<-mgi[idx,"mgi_symbol"]
+  tg$deg<-degs[tg$ensembl]
+  as.data.frame(tg)
+}
+all.equal(rownames(res_culture_dmrt1),rownames(res_culture_sox9))
+temp<-
+as.data.frame(res_culture_dmrt1[rownames(res_culture_dmrt1) %in% rownames(res_culture_sox9),c(7,1,2,6)])
+listGO("GO:0008584",degs=degs_dmrt1) #male gonad development:  GO:0008584
+listGO("GO:0003006",degs=degs_dmrt1) #developmental process involved in reproduction
+listGO("GO:0042573") #retinoic acid metabolic process
+listGO("GO:0043401") #steroid hormone mediated signaling pathway
+```
+
+#Build dds object
+```{r}
+cbind(as.data.frame(apply(rev_stranded_counts$counts,2,sum)),as.data.frame(apply(rev_stranded_unfiltered$counts,2,sum)))
+
+coldata<-as.data.frame(apply(rev_stranded_counts$counts,2,sum))
+colnames(coldata)<-"total_counts"
+dim(coldata)
+
+coldata$sample_name<-rownames(coldata) %>% 
+  gsub("\\.\\.\\.Project_033p2\\.GRCm38\\.","",.) %>% 
+  gsub("GRCm38\\.","",.) %>% 
+    gsub("\\.Aligned\\.sortedByCoord\\.out\\.dedup\\.unique\\.bam","",.)  %>% 
+  gsub("\\.Aligned\\.sortedByCoord\\.out\\.bam","",.)  %>% 
+   gsub("\\.dedup\\.unique\\.bam","",.) %>% 
+  gsub("\\.bam","",.) %>% 
+  gsub("expB_KO_Other_idx15","tother_KO_repB_P033_Pool2_Index15",.) %>%
+  gsub("expB_KO_Tfh_idx16","tfh_KO_repB_P033_Pool2_Index16",.) %>%
+  gsub("expB_KO_Tfh.Th17_idx14","tfhth17_KO_repB_P033_Pool2_Index14",.) %>%
+  gsub("expB_KO_Th17_idx13","th17_KO_repB_P033_Pool2_Index13",.) %>%
+  gsub("expB_WT_Other_idx11","tother_WT_repB_P033_Pool2_Index11",.) %>%
+  gsub("expB_WT_Tfh_idx12","tfh_WT_repB_P033_Pool2_Index12",.) %>%
+  gsub("expB_WT_Tfh.Th17_idx10","tfhth17_WT_repB_P033_Pool2_Index10",.) %>%
+  gsub("expB_WT_Th17_idx9","th17_WT_repB_P033_Pool2_Index9",.) %>%
+  gsub("expD_KO_Other_idx7","tother_KO_repD_P033_Pool2_Index7",.) %>%
+  gsub("expD_KO_Tfh_idx8","tfh_KO_repD_P033_Pool2_Index8",.) %>%
+  gsub("expD_KO_Tfh.Th17_idx6","tfhth17_KO_repD_P033_Pool2_Index6",.) %>%           
+  gsub("expD_KO_Th17_idx5","th17_KO_repD_P033_Pool2_Index5",.) %>%
+  gsub("expD_WT_Other_idx3","tother_WT_repD_P033_Pool2_Index3",.) %>%
+  gsub("expD_WT_Tfh_idx4","tfh_WT_repD_P033_Pool2_Index4",.) %>%
+  gsub("expD_WT_Tfh.Th17_idx2","tfhth17_WT_repD_P033_Pool2_Index2",.) %>%           
+  gsub("expD_WT_Th17_idx1","th17_WT_repD_P033_Pool2_Index1",.) 
+
+dds<-DESeqDataSetFromMatrix(rev_stranded_counts$counts,colData = coldata,design = ~1)
+rownames(colData(dds)) <- colData(dds)$sample_name
+rownames(dds)<-substr(rownames(dds),1,18)
+mcols(dds)$basepairs<-rev_stranded_counts$annotation$Length
+#mcols(dds)$mgi_symbol<-mgi[match(rownames(dds),mgi$ensembl_gene_id),]$mgi_symbol
+mcols(dds)$symbol<-symbols[match(rownames(dds),symbols$gene_id),]$gene_name
+
+colData(dds)$celltype<-factor(as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,1]),levels=c("th17","tfh","tfhth17","tother"))
+colData(dds)$genotype<-factor(as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,2]),levels=c("WT","KO"))
+colData(dds)$rep<-as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,3])
+colData(dds)$project<-factor(as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,4]),levels=c("P033","P041"))
+colData(dds)$pool<-as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,5])
+colData(dds)$index<-as.character(str_split_fixed(colData(dds)$sample_name,"_", 6)[,6])
+
+dds<-estimateSizeFactors(dds)
+#eliminate samples with < 20% of reads
+as.data.frame(colData(dds_subset<-dds[,colData(dds)$sizeFactor > 0.20]))
+dds_subset<-estimateSizeFactors(dds_subset)
+design(dds_subset)<- ~project +celltype + genotype  #take the bias due to the project into account
+```
+
+# PCA plots
+```{r}
+# log2 transform
+g1<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + theme(legend.position = "none")
+g2<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(3,1)) + theme_bw() + theme(legend.position = "none")
+g3<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(3,2)) + theme_bw() + theme(legend.position = "none")
+g4<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(2,3)) + theme_bw() 
+grid.arrange(g1,g3,g_legend(g4),g2, ncol=2,top="All Genes Log2 Transformd PCA")
+
+# rlog transform
+rlog_dds_subset<-rlog(dds_subset,blind=F)
+g1r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + theme(legend.position = "none")
+g2r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(3,1)) + theme_bw() + theme(legend.position = "none")
+g3r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(3,2)) + theme_bw() + theme(legend.position = "none")
+g4r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(2,3)) + theme_bw() 
+grid.arrange(g1r,g3r,g_legend(g4r),g2r, ncol=2,top="All Genes Rlog Transformd PCA")
+
+# focus on T cell genes only?
+tcell_genes<-as.data.frame(mgi_goterms[grep("T cell",mgi_goterms$Description),])
+length(tcell_genes<-unique(as.character(unlist(mgi_go.listByTerm[tcell_genes$`GO ID`]))))
+
+dim(dds_tcell<-dds_subset[rownames(dds_subset) %in% tcell_genes,])
+plotPCA.DESeqTransform(normTransform(dds_tcell),intgroup=c("celltype","genotype"),ntop=Inf,dims=c(1,2)) + theme_bw() + ggtitle("T Cell Genes")
+rlog_dds_tcell<-rlog(dds_tcell,blind=F)
+plotPCA.DESeqTransform(rlog_dds_tcell,intgroup=c("celltype","genotype"),ntop=Inf,dims=c(1,2)) + theme_bw() + ggtitle("T Cell Genes - Rlog")
+
+#dds_subset<-DESeq(dds_subset)
+
+```
+
+# Eigenvectors for PC2
+```{r eigenvectors_for_pca,eval=T}
+rlog_dds_subset.pca<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),returnData=T)
+nt.rot<-attr(rlog_dds_subset.pca,"rotation")
+plot(rlog_dds_subset.pca[,c(1,2)],col=ifelse(stringr::str_detect(rownames(rlog_dds_subset.pca),"_KO_"),"red","black"),pch=16)
+topN <- 10
+
+#pc1
+nt.rot1<-as.data.frame(nt.rot[order(abs(nt.rot[,1]),decreasing=TRUE),])[,1,drop=F]
+head(left_join(tibble::rownames_to_column(nt.rot1,var="gene_id"),symbols,by="gene_id"),topN) 
+
+#pc2
+nt.rot2<-as.data.frame(nt.rot[order(abs(nt.rot[,2]),decreasing=TRUE),])[,2,drop=F]
+head(left_join(tibble::rownames_to_column(nt.rot2,var="gene_id"),symbols,by="gene_id"),topN)
+
+#pc3
+nt.rot3<-as.data.frame(nt.rot[order(abs(nt.rot[,3]),decreasing=TRUE),])[,3,drop=F]
+head(left_join(tibble::rownames_to_column(nt.rot3,var="gene_id"),symbols,by="gene_id"),topN)
+
+```
+
+#Make normalized FPKM table and heatmap of T cell genes
+```{r}
+
+goi<-c("Rorc", "Ccr6", "Maf", "Il17a", "Ahr", "Bcl6", "Cxcr5", "Pdcd1", "Il4", "Il21" , "Tbx21", "Ifng")
+goiDF<-symbols[symbols$gene_name %in% goi,]
+rownames(goiDF)<-goiDF$gene_name
+goiDF<-goiDF[goi,]
+
+
+fpkm<-fpkm(dds_subset,robust=TRUE)
+colnames(fpkm)<-paste(colData(dds_subset)$celltype,colData(dds_subset)$genotype,colData(dds_subset)$rep,sep="_")
+#temp<-log2(fpkm[tcell_genes,]+0.1)
+temp<-log2(fpkm[goiDF$gene_id,]+0.1)
+
+rownames(temp)<-symbols[match(rownames(temp),symbols$gene_id),"gene_name"]
+temp<-temp[,sort(colnames(temp))]
+
+
+temp2<-as.matrix(t(scale(t(temp),center=T,scale=T)))
+
+heatmaply(temp2, scale="none", main = "T Cell Genes",Rowv=NULL,Colv=NULL,
+scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", 
+                                                                  high = "red",
+                                                                  midpoint = 0,
+                                                                  limits = c(min(temp2), max(temp2))),
+          margins = c(150,100,100,60),file="Jessica_gene_list.html",width=700,height=1000)
+
+
+```
+
+#
+```{r}
+
+plotPCA(normTransform(dds_subset),intgroup=c("celltype","genotype")) + theme_bw()
+dds_subset<-DESeq(dds_subset)
+
+summary(res_global<-results(dds_subset))
+#results$mgi_symbol<-mgi[match(rownames(results),mgi$ensembl_gene_id),"mgi_symbol"]
+res_global$symbol<-mcols(dds_subset)$symbol
+stopifnot(all.equal(res_global$symbol,symbols[match(rownames(res_global),symbols$gene_id),"gene_name"]))
+#View(as.data.frame(res_global))
+nrow(res_global<-subset(res_global,abs(log2FoldChange) > 1 & padj <0.05 & baseMean > 50)) # subset to significant
+res_global<-res_global[with(res_global,order(padj)),] #sort based on padj
+head(as.data.frame(res_global),20)
+gg_plotCounts(rownames(res_global[1,]))
+```
+
+#Th17
+ Smaller variance was seen for Th17 population.  Attempt to identify differentially expressed genes specifically in this population
+ 
+## First approach is to use the whole dataset but make a contrast between WT Th17 cells and KO Th17 cells
+```{r}
+dds_subset_grouped<-dds_subset
+dds_subset_grouped$group <- factor(paste0(dds_subset_grouped$celltype, dds_subset_grouped$genotype))
+design(dds_subset_grouped) <- ~project + group
+dds_subset_grouped <- DESeq(dds_subset_grouped)
+resultsNames(dds_subset_grouped)
+summary(res_global_th17<-results(dds_subset_grouped,contrast=c("group","th17KO","th17WT"),alpha=0.05))
+
+res_global_th17$symbol<-mcols(dds_subset_grouped)$symbol
+stopifnot(all.equal(res_global_th17$symbol,symbols[match(rownames(res_global_th17),symbols$gene_id),"gene_name"]))
+#View(as.data.frame(res_th17))
+nrow(res_global_th17<-subset(res_global_th17,abs(log2FoldChange) > 1 & padj <0.05 & baseMean > 50)) # subset to significant
+res_global_th17<-res_global_th17[with(res_global_th17,order(padj)),] #sort based on padj
+head(as.data.frame(res_global_th17),20)
+gg_plotCounts(rownames(res_global_th17[1,]))
+
+```
+
+## Second approach is to subset the dataset to just Th17 cells and look for differences between WT and MT
+```{r}
+as.data.frame(colData(dds_th17<-dds_subset[,colData(dds_subset)$celltype == "th17"]))
+dds_th17<-estimateSizeFactors(dds_th17)
+design(dds_th17)<- ~project+genotype
+
+dds_th17<-DESeq(dds_th17)
+summary(res_th17<-results(dds_th17,alpha=0.05))
+
+res_th17$symbol<-mcols(dds_th17)$symbol
+stopifnot(all.equal(res_th17$symbol,symbols[match(rownames(res_th17),symbols$gene_id),"gene_name"]))
+#View(as.data.frame(res_th17))
+nrow(res_th17<-subset(res_th17,abs(log2FoldChange) > 1 & padj <0.05 & baseMean > 50)) # subset to significant
+res_th17<-res_global[with(res_th17,order(padj)),] #sort based on padj
+head(as.data.frame(res_th17),20)
+gg_plotCounts(rownames(res_th17[1,]))
+
+```
+
+
