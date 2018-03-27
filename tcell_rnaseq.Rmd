@@ -16,8 +16,13 @@ library("stringr")
 library("ggplot2")
 library("DESeq2")
 library("heatmaply")
+library("GenomicFeatures")
+library("rtracklayer")
+library("gridExtra")
+library("svglite")
 
 source("custom_plotPCA.R")
+ts<-format(Sys.time(), "%a_%b_%d_%Y_%H%M")
 ```
 
 # Download Annotations
@@ -34,7 +39,7 @@ source("custom_plotPCA.R")
 #R.utils::gunzip("mm10.blacklist.bed.gz")
 
 #point to file downloaded above
-gff3_file<-"gencode.vM16.annotation.gff3"
+gff3_file<-"../../R_RESOURCES/gencode.vM16.annotation.gff3"
 
 txdb<-makeTxDbFromGFF(gff3_file,format="gff3")
 seqlevelsStyle(txdb)<-"NCBI"
@@ -261,6 +266,7 @@ colData(dds)$index<-as.character(str_split_fixed(colData(dds)$sample_name,"_", 6
 
 dds<-estimateSizeFactors(dds)
 #eliminate samples with < 20% of reads
+as.data.frame(colData(dds[,colData(dds)$sizeFactor < 0.20]))
 as.data.frame(colData(dds_subset<-dds[,colData(dds)$sizeFactor > 0.20]))
 dds_subset<-estimateSizeFactors(dds_subset)
 design(dds_subset)<- ~project +celltype + genotype  #take the bias due to the project into account
@@ -275,13 +281,20 @@ g3<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","geno
 g4<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(2,3)) + theme_bw() 
 grid.arrange(g1,g3,g_legend(g4),g2, ncol=2,top="All Genes Log2 Transformd PCA")
 
+
+
 # rlog transform
-rlog_dds_subset<-rlog(dds_subset,blind=F)
+rlog_dds_subset<-rlog(dds_subset,blind=T)
 g1r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + theme(legend.position = "none")
 g2r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(3,1)) + theme_bw() + theme(legend.position = "none")
 g3r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(3,2)) + theme_bw() + theme(legend.position = "none")
 g4r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(2,3)) + theme_bw() 
 grid.arrange(g1r,g3r,g_legend(g4r),g2r, ncol=2,top="All Genes Rlog Transformd PCA")
+
+svg(filename=paste0("pca_plot_",ts,".svg"),width=6,height=6)
+g1r
+dev.off()
+
 
 # focus on T cell genes only?
 tcell_genes<-as.data.frame(mgi_goterms[grep("T cell",mgi_goterms$Description),])
@@ -343,8 +356,9 @@ scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue",
                                                                   midpoint = 0,
                                                                   limits = c(min(temp2), max(temp2))),
           margins = c(150,100,100,60),file="Jessica_gene_list.html",width=700,height=1000)
-
-
+svg("temp.svg",width=6,height=6)
+pheatmap(temp2)
+dev.off()
 ```
 
 #
