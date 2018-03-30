@@ -15,11 +15,13 @@ library("dplyr")
 library("stringr")
 library("ggplot2")
 library("DESeq2")
-library("heatmaply")
+#library("heatmaply")
 library("GenomicFeatures")
 library("rtracklayer")
+library("ComplexHeatmap")
 library("gridExtra")
 library("svglite")
+
 
 source("custom_plotPCA.R")
 ts<-format(Sys.time(), "%a_%b_%d_%Y_%H%M")
@@ -86,6 +88,7 @@ save(symbols,transcripts,bl_mm10,file="symbols_M16.rdata")
 
 #with duplicates removed 
 load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata"))
+load("../../R_RESOURCES/symbols_M16.rdata")
 #load(url("https://s3.msi.umn.edu/gearhart/symbols_M16.rdata"))
 ```
 
@@ -115,7 +118,7 @@ gg_plotCounts<-function(x="ENSMUSG00000028150",d=dds_subset) {
 
 # Download GO Data from MGI
 ```{r}
-mgi_go<-readr::read_delim("../../zarkowe0/granulosa_culture/gene_association.mgi",delim="\t",skip=24,col_names=F)
+mgi_go<-readr::read_delim("../../R_RESOURCES/gene_association.mgi",delim="\t",skip=24,col_names=F)
 
 colnames(mgi_go)<-c("DB","DB Object ID","Mgi Symbol","Qualifier","GO ID","DB:eEference","Evidence Code",
                     "WithorFrom","Aspect","DB Object Name","DB Object Syn","DB Object Type","Taxon","Date","Assigned By",
@@ -130,7 +133,7 @@ mgi_go$ensembl<-mcols(transcripts)$gene_id[idx]
 dim(mgi_go<-mgi_go[!is.na(mgi_go$ensembl),c("ensembl","GO ID")])
 
 #subset to BP
-mgi_goterms<-readr::read_delim("../../zarkowe0/granulosa_culture/go_terms.mgi",delim="\t",col_names=F)
+mgi_goterms<-readr::read_delim("../../R_RESOURCES/go_terms.mgi",delim="\t",col_names=F)
 colnames(mgi_goterms)<-c("Category","GO ID","Description")
 table(mgi_goterms$Category)
 dim(mgi_BP_goterms<-mgi_goterms[mgi_goterms$Category=="Biological Process","GO ID"])
@@ -282,7 +285,6 @@ g4<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","geno
 grid.arrange(g1,g3,g_legend(g4),g2, ncol=2,top="All Genes Log2 Transformd PCA")
 
 
-
 # rlog transform
 rlog_dds_subset<-rlog(dds_subset,blind=T)
 g1r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + theme(legend.position = "none")
@@ -291,7 +293,7 @@ g3r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),nt
 g4r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(2,3)) + theme_bw() 
 grid.arrange(g1r,g3r,g_legend(g4r),g2r, ncol=2,top="All Genes Rlog Transformd PCA")
 
-svg(filename=paste0("pca_plot_",ts,".svg"),width=6,height=6)
+pdf(file=paste0("pca_plot_",ts,".pdf"),width=6,height=6)
 g1r
 dev.off()
 
@@ -333,11 +335,16 @@ head(left_join(tibble::rownames_to_column(nt.rot3,var="gene_id"),symbols,by="gen
 #Make normalized FPKM table and heatmap of T cell genes
 ```{r}
 
-goi<-c("Rorc", "Ccr6", "Maf", "Il17a", "Ahr", "Bcl6", "Cxcr5", "Pdcd1", "Il4", "Il21" , "Tbx21", "Ifng")
-goiDF<-symbols[symbols$gene_name %in% goi,]
-rownames(goiDF)<-goiDF$gene_name
-goiDF<-goiDF[goi,]
+goi<-list(th17=c("Rorc", "Ccr6", "Maf", "Il17a"),
+          tfh=c( "Bcl6", "Cxcr5", "Pdcd1", "Il4", "Il21"),
+          tother=c( "Tbx21", "Ifng"))
 
+goiDF<-symbols[symbols$gene_name %in% unlist(goi),]
+rownames(goiDF)<-goiDF$gene_name
+goiDF<-goiDF[unlist(goi),]
+goiDF$celltype<-"x"
+for (i in 1:nrow(goiDF)) {goiDF$celltype[i]<-names(goi)[grep(rownames(goiDF)[i],goi)]}
+goiDF$celltype=factor(goiDF$celltype,levels=c("th17","tfh","tother"))
 
 fpkm<-fpkm(dds_subset,robust=TRUE)
 colnames(fpkm)<-paste(colData(dds_subset)$celltype,colData(dds_subset)$genotype,colData(dds_subset)$rep,sep="_")
@@ -350,15 +357,41 @@ temp<-temp[,sort(colnames(temp))]
 
 temp2<-as.matrix(t(scale(t(temp),center=T,scale=T)))
 
-heatmaply(temp2, scale="none", main = "T Cell Genes",Rowv=NULL,Colv=NULL,
-scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", 
-                                                                  high = "red",
-                                                                  midpoint = 0,
-                                                                  limits = c(min(temp2), max(temp2))),
-          margins = c(150,100,100,60),file="Jessica_gene_list.html",width=700,height=1000)
-svg("temp.svg",width=6,height=6)
-pheatmap(temp2)
-dev.off()
+#heatmaply(temp2, scale="none", main = "T Cell Genes",Rowv=NULL,Colv=NULL,
+#scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", 
+#                                                                high = "red",
+#                                                                  midpoint = 0,
+#                                                                  limits = c(min(temp2), max(temp2))),
+#          margins = c(150,100,100,60),file="Jessica_gene_list.html",width=700,height=1000)
+#svg("temp.svg",width=6,height=6)
+#pheatmap(temp2)
+#dev.off()
+```
+
+#Expression Heatmap
+```{r}
+
+
+col_fun = circlize::colorRamp2(c(min(temp2),0, max(temp2)), c("blue","white", "red"))
+
+ht_th17 = Heatmap(temp2[,str_detect(colnames(temp2),"^th17")], column_title = "th17", rect_gp = gpar(col = "black", lwd = 0.5),
+                  cluster_rows = TRUE, cluster_columns=TRUE,split = goiDF$celltype,
+                  row_names_side = "left",col = col_fun, show_heatmap_legend = TRUE)
+
+ht_tfth17 = Heatmap(temp2[,str_detect(colnames(temp2),"^tfhth17")],column_title = "tfhth17", rect_gp = gpar(col = "black", lwd = 0.5),
+                    cluster_rows = TRUE, cluster_columns=TRUE,split = goiDF$celltype,
+                    show_row_names = FALSE,col = col_fun,show_heatmap_legend = FALSE)
+ht_tfh = Heatmap(temp2[,str_detect(colnames(temp2),"^tfh_")], column_title = "tfh", rect_gp = gpar(col = "black", lwd = 0.5),
+                 cluster_rows = TRUE, cluster_columns=TRUE,split = goiDF$celltype,
+                 show_row_names=F,col = col_fun,show_heatmap_legend = FALSE)
+
+ht_tother = Heatmap(temp2[,str_detect(colnames(temp2),"^tother")], column_title = "tother", rect_gp = gpar(col = "black", lwd = 0.5),
+                    cluster_rows = TRUE, cluster_columns=TRUE, split = goiDF$celltype,
+                    show_row_names=F,row_dend_side = "right",col = col_fun,show_heatmap_legend = FALSE)
+
+draw(ht_th17 + ht_tfth17 + ht_tfh + ht_tother,main_heatmap=1,split = goiDF$celltype,row_dend_side="right")
+
+
 ```
 
 #
