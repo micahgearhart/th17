@@ -329,7 +329,7 @@ g4r<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),nt
 grid.arrange(g1r,g3r,g_legend(g4r),g2r, ncol=2,top="All Genes Rlog Transformd PCA")
 
 pdf(file=paste0("pca_plot_",ts,".pdf"),width=6,height=6)
-g1r
+plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + ggtitle("Rlog Transformed PCA")
 dev.off()
 
 
@@ -413,7 +413,7 @@ ht_tother = Heatmap(temp2[,c(which(str_detect(colnames(temp2),"^tother_WT")),whi
                     cluster_rows = TRUE, cluster_columns=FALSE, split = goiDF$celltype,
                     show_row_names=F,row_dend_side = "right",col = col_fun,show_heatmap_legend = FALSE)
 
-pdf(file=paste0("heatmap_",ts,".pdf"),width=6,height=6)
+pdf(file=paste0("heatmap_",ts,".pdf"),width=8,height=8)
 draw(ht_th17 + ht_tfth17 + ht_tfh + ht_tother,main_heatmap=1,split = goiDF$celltype,row_dend_side="right")
 dev.off()
 ```

@@ -35,7 +35,7 @@ plotPCA.DESeqTransform = function(object, intgroup="condition", ntop=500, dims=c
     return(d)
   }
   
-  ggplot(data=d, aes_string(x=paste0("PC",dims[1]), y=paste0("PC",dims[2]), color="group")) + geom_point(size=3) + 
+  ggplot(data=d, aes_string(x=paste0("PC",dims[1]), y=paste0("PC",dims[2]), color=intgroup[1],shape=intgroup[2])) + geom_point(size=3) + 
     xlab(paste0("PC",dims[1],": ",round(percentVar[dims[1]] * 100),"% variance")) +
     ylab(paste0("PC",dims[2],": ",round(percentVar[dims[2]] * 100),"% variance")) 
     # removed coord_fixed()
