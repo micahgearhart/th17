@@ -200,6 +200,11 @@ annotate_genes<-function(df,gr,tx=transcripts,cutoff=10000) {
 
 # Download GO Data from MGI
 ```{r load_go,eval=T}
+#download.file("http://www.informatics.jax.org/downloads/reports/gene_association.mgi.gz",destfile="../../R_RESOURCES/gene_association.mgi.gz")
+#R.utils::gunzip("../../R_RESOURCES/gene_association.mgi.gz")
+#download.file("http://www.informatics.jax.org/downloads/reports/go_terms.mgi",destfile="../../R_RESOURCES/go_terms.mgi")
+
+
 mgi_go<-readr::read_delim("../../R_RESOURCES/gene_association.mgi",delim="\t",skip=24,col_names=F)
 
 colnames(mgi_go)<-c("DB","DB Object ID","Mgi Symbol","Qualifier","GO ID","DB:eEference","Evidence Code",
