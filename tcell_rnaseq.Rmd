@@ -8,7 +8,9 @@ editor_options:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-# Load Libraries
+
+# Setup
+## Load Libraries
 ```{r libraries,eval=T,results='hide',message=FALSE,warning=FALSE}
 library("magrittr")
 library("dplyr")
@@ -23,13 +25,14 @@ library("ChIPpeakAnno")
 library("ComplexHeatmap")
 library("gridExtra")
 library("goseq")
+library("regioneR")
 
 source("custom_plotPCA.R")
 ts<-format(Sys.time(), "%a_%b_%d_%Y_%H%M")
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 ```
 
-# Download Annotations
+## Download Annotations & Counts
 ```{r gencode_annotations,eval=F}
 #Download one of the following
 #download.file("ftp://ftp.sanger.ac.uk/pub/gencode/Gencode_mouse/release_M16/gencode.vM16.annotation.gff3.gz",destfile="gencode.vM16.annotation.gff3.gz")
@@ -46,7 +49,7 @@ cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
 gff3_file<-"../../R_RESOURCES/gencode.vM16.annotation.gff3"
 
 txdb<-makeTxDbFromGFF(gff3_file,format="gff3")
-seqlevelsStyle(txdb)<-"NCBI"
+  seqlevelsStyle(txdb)<-"NCBI"
 
 #get symbols and biotypes from gff3 file that is not in txdb
 M16<-import(gff3_file,format="gff3")
@@ -66,6 +69,9 @@ mcols(transcripts)<-data.frame(gene_id=transcripts$gene_id,stringsAsFactors = F)
 transcripts$symbol<-symbols$gene_name[match(transcripts$gene_id,symbols$gene_id)]
 transcripts$biotype<-symbols$gene_type[match(transcripts$gene_id,symbols$gene_id)]
 
+
+exons<-exonsBy(txdb,"tx",use.names=TRUE)
+#names(exons)<-substr(names(exons),1,18)
 #any more from MGI table?
 #MGI<-read.table("gencode.vM16.metadata.MGI",header=F,stringsAsFactors = F)
 #summary(idx<-match(names(transcripts),MGI$V1))
@@ -77,11 +83,8 @@ transcripts$biotype<-symbols$gene_type[match(transcripts$gene_id,symbols$gene_id
 bl_mm10<-import("mm10.blacklist.bed")
 seqlevelsStyle(bl_mm10)<-"NCBI"
 
-save(symbols,transcripts,bl_mm10,file="symbols_M16.rdata")
-```
+save(symbols,transcripts,exons,bl_mm10,file="symbols_M16.rdata")
 
-# Load Data
-```{r load_data,eval=T}
 #load(url("https://s3.msi.umn.edu/jenkinsm/featureCounts_Gencode-M16_q0_Sun_Jan_21_2018_1932.rdata"))
 #load(url("https://s3.msi.umn.edu/gearhart/mgi91.rdata"))
 
@@ -89,13 +92,90 @@ save(symbols,transcripts,bl_mm10,file="symbols_M16.rdata")
 #load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Feb_06_2018_0947.rdata"))
 
 #with duplicates removed 
-load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata"))
-load("../../R_RESOURCES/symbols_M16.rdata")
+#load(url("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata"))
+download.file("https://jenkinsm.s3.msi.umn.edu/featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata",destfile = "featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata")
+
 #load(url("https://s3.msi.umn.edu/gearhart/symbols_M16.rdata"))
+
+#MGI GO annotations
+#download.file("http://www.informatics.jax.org/downloads/reports/gene_association.mgi.gz",destfile="../../R_RESOURCES/gene_association.mgi.gz")
+#R.utils::gunzip("../../R_RESOURCES/gene_association.mgi.gz")
+#download.file("http://www.informatics.jax.org/downloads/reports/go_terms.mgi",destfile="../../R_RESOURCES/go_terms.mgi")
+
 ```
 
-# Define Functions
-```{r}
+## Load GO Annotations from  MGI
+```{r load_go,eval=F}
+
+mgi_go<-readr::read_delim("../../R_RESOURCES/gene_association.mgi",delim="\t",skip=24,col_names=F)
+
+colnames(mgi_go)<-c("DB","DB Object ID","Mgi Symbol","Qualifier","GO ID","DB:eEference","Evidence Code",
+                    "WithorFrom","Aspect","DB Object Name","DB Object Syn","DB Object Type","Taxon","Date","Assigned By",
+                    "Annotation Extension","Gene Product Form ID")
+table(mgi_go$`Evidence Code`)
+#high quality?  
+#dim(mgi_go<-mgi_go[mgi_go$`Evidence Code` %in% c("EXP","IDA","IEP","IGI","IMP","IPI","ISS","TAS"),])
+
+summary(idx<-match(mgi_go$`Mgi Symbol`,mcols(transcripts)$symbol))
+mgi_go$ensembl<-mcols(transcripts)$gene_id[idx]
+
+dim(mgi_go<-mgi_go[!is.na(mgi_go$ensembl),c("ensembl","GO ID")])
+
+#subset to BP
+mgi_goterms<-readr::read_delim("../../R_RESOURCES//go_terms.mgi",delim="\t",col_names=F)
+colnames(mgi_goterms)<-c("Category","GO ID","Description")
+table(mgi_goterms$Category)
+dim(mgi_BP_goterms<-mgi_goterms[mgi_goterms$Category=="Biological Process","GO ID"])
+dim(mgi_go<-mgi_go[mgi_go$`GO ID` %in% mgi_BP_goterms$`GO ID`,])
+
+mgi_go[grep("ENSMUSG00000044770",mgi_go$ensembl),]
+#dim(mgi_go<-mgi_go[mgi_go$ensembl %in% expressed_genes,])
+
+
+#remove duplicated entries (possibly from multiple lines of evidence)
+dim(mgi_go<-mgi_go[!duplicated(mgi_go),])
+
+mgi_go.list<-split(mgi_go$`GO ID`,mgi_go$ensembl)
+
+mgi_go.listByTerm<-split(mgi_go$ensembl,mgi_go$`GO ID`)
+mgi_go.listByGene<-split(mgi_go$`GO ID`,mgi_go$ensembl)
+
+#add term length to mgi_goterms
+mgi_go.listByTerm<-split(mgi_go$ensembl,mgi_go$`GO ID`)
+term_length<-sapply(mgi_go.listByTerm,length)
+mgi_goterms$length<-term_length[mgi_goterms$`GO ID`]
+
+as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[[symbols[grep("^Tbx21$",symbols$gene_name),"gene_id"]]],])
+as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[[symbols[grep("^Scml4$",symbols$gene_name),"gene_id"]]],])
+
+
+
+
+#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000024837"]],])
+#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000050397"]],])
+
+symbols[symbols$gene_id %in% mgi_go[grep("GO:0030217",mgi_go$`GO ID`),"ensembl"]$ensembl,] #T Cell Differentiotion
+
+#bias.data
+#bd<-sum(width(reduce(ens87)))
+bd<-rev_stranded_counts$annotation$Length
+names(bd)<-substr(rev_stranded_counts$annotation$GeneID,1,18)
+bd["ENSMUSG00000001444"] #tbet
+
+
+save(bd,mgi_go.list,mgi_goterms,mgi_go.listByGene,mgi_go,file="mgi_go.rdata")
+```
+
+
+## Load Data
+```{r load_data,eval=T}
+load("featureCounts_Gencode-M16_q0_Tue_Mar_20_2018_0751.rdata")
+load("symbols_M16.rdata")
+load("mgi_go.rdata")
+```
+
+## Define Functions
+```{r functions,eval=T}
 gg_plotCounts<-function(x="ENSMUSG00000028150",d=dds_subset) {
   if (substr(x,1,7)=="ENSMUSG") {
    # title<-mgi[grep(x,mgi$ensembl_gene_id),"mgi_symbol"]
@@ -165,6 +245,18 @@ annotate_peaks<-function(gr,tx=transcripts,cutoff=10000) {
   
 }
 
+peaks_to_genes<-function(gr,tx=transcripts,cutoff=10000) {
+  seqlevelsStyle(gr)<-"NCBI"
+  gr<-gr[!gr %over% bl_mm10]
+  
+  gr_anno<-annotatePeakInBatch(gr, AnnotationData=tx, output="both", maxgap=1000L)
+  gr_anno<-subset(gr_anno,shortestDistance<=cutoff)
+  gr_anno$ensembl<-tx[match(gr_anno$feature,names(tx))]$gene_id
+
+  #return chacter vector of ENSEMBL IDs
+  return(unique(gr_anno$ensembl))
+}
+
 annotate_genes<-function(df,gr,tx=transcripts,cutoff=10000) {
   seqlevelsStyle(gr)<-"NCBI"
   gr<-gr[!gr %over% bl_mm10]
@@ -196,74 +288,35 @@ annotate_genes<-function(df,gr,tx=transcripts,cutoff=10000) {
   return(df)
   
 }
-```
-
-# Download GO Data from MGI
-```{r load_go,eval=T}
-#download.file("http://www.informatics.jax.org/downloads/reports/gene_association.mgi.gz",destfile="../../R_RESOURCES/gene_association.mgi.gz")
-#R.utils::gunzip("../../R_RESOURCES/gene_association.mgi.gz")
-#download.file("http://www.informatics.jax.org/downloads/reports/go_terms.mgi",destfile="../../R_RESOURCES/go_terms.mgi")
-
-
-mgi_go<-readr::read_delim("../../R_RESOURCES/gene_association.mgi",delim="\t",skip=24,col_names=F)
-
-colnames(mgi_go)<-c("DB","DB Object ID","Mgi Symbol","Qualifier","GO ID","DB:eEference","Evidence Code",
-                    "WithorFrom","Aspect","DB Object Name","DB Object Syn","DB Object Type","Taxon","Date","Assigned By",
-                    "Annotation Extension","Gene Product Form ID")
-table(mgi_go$`Evidence Code`)
-#high quality?  
-#dim(mgi_go<-mgi_go[mgi_go$`Evidence Code` %in% c("EXP","IDA","IEP","IGI","IMP","IPI","ISS","TAS"),])
-
-summary(idx<-match(mgi_go$`Mgi Symbol`,mcols(transcripts)$symbol))
-mgi_go$ensembl<-mcols(transcripts)$gene_id[idx]
-
-dim(mgi_go<-mgi_go[!is.na(mgi_go$ensembl),c("ensembl","GO ID")])
-
-#subset to BP
-mgi_goterms<-readr::read_delim("../../R_RESOURCES//go_terms.mgi",delim="\t",col_names=F)
-colnames(mgi_goterms)<-c("Category","GO ID","Description")
-table(mgi_goterms$Category)
-dim(mgi_BP_goterms<-mgi_goterms[mgi_goterms$Category=="Biological Process","GO ID"])
-dim(mgi_go<-mgi_go[mgi_go$`GO ID` %in% mgi_BP_goterms$`GO ID`,])
-
-
-#dim(mgi_go<-mgi_go[mgi_go$ensembl %in% expressed_genes,])
-
-
-#remove duplicated entries (possibly from multiple lines of evidence)
-dim(mgi_go<-mgi_go[!duplicated(mgi_go),])
-
-mgi_go.list<-split(mgi_go$`GO ID`,mgi_go$ensembl)
-
-#add term length to mgi_goterms
-mgi_go.listByTerm<-split(mgi_go$ensembl,mgi_go$`GO ID`)
-term_length<-sapply(mgi_go.listByTerm,length)
-mgi_goterms$length<-term_length[mgi_goterms$`GO ID`]
-
-as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[[symbols[grep("^Tbx21$",symbols$gene_name),"gene_id"]]],])
 
 geneToGOIDs<-function(x) {
-  terms<-mgi_go.list[[symbols[grep(x,symbols$gene_name),"gene_id"]]]
-  as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% terms,])
+#  terms<-mgi_go.list[[symbols[grep(x,symbols$gene_name),"gene_id"]]]
+#  as.data.frame(mgi_goterms[mgi_goterms$`GO ID` %in% terms,])
+  paste(mgi_goterms$Description[mgi_goterms$`GO ID` %in% mgi_go.listByGene[[x]]],collapse = ";")
 }
+#geneToGOIDs("ENSMUSG00000001444")
 
-#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000024837"]],])
-#View(mgi_goterms[mgi_goterms$`GO ID` %in% mgi_go.list[["ENSMUSG00000050397"]],])
-
-symbols[symbols$gene_id %in% mgi_go[grep("GO:0030217",mgi_go$`GO ID`),"ensembl"]$ensembl,] #T Cell Differentiotion
-
-#bias.data
-#bd<-sum(width(reduce(ens87)))
-bd<-rev_stranded_counts$annotation$Length
-names(bd)<-substr(rev_stranded_counts$annotation$GeneID,1,18)
-bd["ENSMUSG00000001444"] #tbet
+listGO<-function(goid,dg=degs) {
+  print(as.data.frame(mgi_goterms[grep(goid,mgi_goterms$`GO ID`),1:3]))
+  tg<-as.data.frame(mgi_go[grep(goid,mgi_go$`GO ID`),"ensembl"])
+  tg<-tg[tg$ensembl %in% expressed_genes,,drop=F]
+  cat(paste0("There are ",nrow(tg)," expressed genes in this category.\n"))
+  idx<-match(tg$ensembl,symbols$gene_id)
+  tg$symbol<-symbols[idx,"gene_name"]
+  tg$deg<-dg[tg$ensembl]
+  tg<-tg[tg$deg==1,]
+  cat (paste0("The ",nrow(tg)," differentially expressed genes are:\n"))
+  return(tg)
+}
 ```
 
 
 
-#Build dds object
+
+
+## Build dds object
 ```{r build_dds,eval=T}
-cbind(as.data.frame(apply(rev_stranded_counts$counts,2,sum)),as.data.frame(apply(rev_stranded_unfiltered$counts,2,sum)))
+#cbind(as.data.frame(apply(rev_stranded_counts$counts,2,sum)),as.data.frame(apply(rev_stranded_unfiltered$counts,2,sum)))
 
 coldata<-as.data.frame(apply(rev_stranded_counts$counts,2,sum))
 colnames(coldata)<-"total_counts"
@@ -315,8 +368,49 @@ dds_subset<-estimateSizeFactors(dds_subset)
 design(dds_subset)<- ~project +celltype + genotype  #take the bias due to the project into account
 ```
 
-# PCA plots
-```{r}
+## Make a table of Mean FPKM and mean count values for each condition
+```{r fpkm_table,eval=T}
+fpkm<-fpkm(dds_subset,robust=TRUE)
+
+f_mean <- fpkm %>% as.data.frame %>% 
+#  dplyr::filter(mgi_symbol %in% c(goi,goi2)) %>%
+  tibble::rownames_to_column(var="ensembl") %>%
+  tidyr::gather(sample,fpkm,-ensembl) %>%
+  dplyr::mutate(time=colData(dds_subset)[sample,]$celltype) %>%
+  dplyr::mutate(gene=colData(dds_subset)[sample,]$genotype) %>%
+  dplyr::mutate(sample=paste(time,gene,sep="_")) %>%
+  dplyr::group_by(sample,ensembl) %>%
+    dplyr::summarize(mean_fpkm=round(mean(fpkm),3)) %>%
+    dplyr::select(sample,ensembl,mean_fpkm) %>%
+    ungroup() %>%
+  tidyr::spread(sample,mean_fpkm) %>% as.data.frame()
+
+rownames(f_mean)<-f_mean$ensembl
+f_mean<-f_mean[,-1]
+colnames(f_mean)<-paste0("fpkm_",colnames(f_mean))
+
+count_mean <- counts(dds_subset,normalized=T) %>% as.data.frame %>% 
+  tibble::rownames_to_column(var="ensembl") %>% 
+ # dplyr::filter(ensembl %in% goiDF$gene_id) %>% 
+  tidyr::gather(sample,counts,-ensembl) %>% 
+  dplyr::mutate(time=colData(dds_subset)[sample,]$celltype) %>%
+  dplyr::mutate(gene=colData(dds_subset)[sample,]$genotype) %>%
+  dplyr::mutate(sample=paste(time,gene,sep="_")) %>% 
+  dplyr::group_by(sample,ensembl) %>%
+    dplyr::summarize(mean_count=round(mean(counts),2)) %>%
+    dplyr::select(sample,ensembl,mean_count) %>%
+    ungroup() %>%
+  tidyr::spread(sample,mean_count) %>% as.data.frame()
+
+  rownames(count_mean)<-count_mean$ensembl
+count_mean<-count_mean[,-1]
+colnames(count_mean)<-paste0("count_",colnames(count_mean))
+
+```
+
+# EDA
+## PCA plots
+```{r pca,eval=F}
 # log2 transform
 g1<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + theme(legend.position = "none")
 g2<-plotPCA.DESeqTransform(normTransform(dds_subset),intgroup=c("celltype","genotype"),ntop=500,dims=c(3,1)) + theme_bw() + theme(legend.position = "none")
@@ -337,6 +431,12 @@ pdf(file=paste0("pca_plot_",ts,".pdf"),width=6,height=6)
 plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),ntop=500,dims=c(1,2)) + theme_bw() + ggtitle("Rlog Transformed PCA")
 dev.off()
 
+g1r+scale_shape_manual(values=c(1,20))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+#+scale_color_manual(values=c("green","blue","red","black"))
+
+ggplot_build(g1r)$data
 
 # focus on T cell genes only?
 tcell_genes<-as.data.frame(mgi_goterms[grep("T cell",mgi_goterms$Description),])
@@ -349,12 +449,12 @@ plotPCA.DESeqTransform(rlog_dds_tcell,intgroup=c("celltype","genotype"),ntop=Inf
 
 ```
 
-# Eigenvectors for PCA
-```{r eigenvectors_for_pca,eval=T}
+## Eigenvectors for PCA
+```{r eigenvectors_for_pca,eval=F}
 rlog_dds_subset.pca<-plotPCA.DESeqTransform(rlog_dds_subset,intgroup=c("celltype","genotype"),returnData=T)
 nt.rot<-attr(rlog_dds_subset.pca,"rotation")
 plot(rlog_dds_subset.pca[,c(1,2)],col=ifelse(stringr::str_detect(rownames(rlog_dds_subset.pca),"_KO_"),"red","black"),pch=16)
-topN <- 10
+topN <- 5
 
 #pc1
 nt.rot1<-as.data.frame(nt.rot[order(abs(nt.rot[,1]),decreasing=TRUE),])[,1,drop=F]
@@ -370,7 +470,7 @@ head(left_join(tibble::rownames_to_column(nt.rot3,var="gene_id"),symbols,by="gen
 
 ```
 
-#Make normalized FPKM table and heatmap of T cell genes
+## Make normalized FPKM table and heatmap of T cell genes
 ```{r fpkm_heatmap,eval=T}
 
 goi<-list(th17=c("Rorc", "Ccr6", "Maf", "Il17a","Cxcr6"),
@@ -384,7 +484,6 @@ goiDF$celltype<-"x"
 for (i in 1:nrow(goiDF)) {goiDF$celltype[i]<-names(goi)[grep(rownames(goiDF)[i],goi)]}
 goiDF$celltype=factor(goiDF$celltype,levels=c("th17","tfh","tother"))
 
-fpkm<-fpkm(dds_subset,robust=TRUE)
 colnames(fpkm)<-paste(colData(dds_subset)$celltype,colData(dds_subset)$genotype,colData(dds_subset)$rep,sep="_")
 #temp<-log2(fpkm[tcell_genes,]+0.1)
 temp<-log2(fpkm[goiDF$gene_id,]+0.1)
@@ -423,73 +522,61 @@ draw(ht_th17 + ht_tfth17 + ht_tfh + ht_tother,main_heatmap=1,split = goiDF$cellt
 dev.off()
 ```
 
-# Global analysis to find BCOR-dependent Transcripts
-```{r}
-design(dds_subset)<-~project + celltype + genotype + celltype:genotype
-dds_subset<-DESeq(dds_subset)
-resultsNames(dds_subset)
-summary(res_global<-results(dds_subset,contrast=c("genotype","KO","WT"),alpha=0.05))
-#results$mgi_symbol<-mgi[match(rownames(results),mgi$ensembl_gene_id),"mgi_symbol"]
-res_global$symbol<-mcols(dds_subset)$symbol
-stopifnot(all.equal(res_global$symbol,symbols[match(rownames(res_global),symbols$gene_id),"gene_name"]))
-#View(as.data.frame(res_global))
-nrow(res_global<-subset(res_global,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
-res_global<-res_global[with(res_global,order(padj)),] #sort based on padj
-head(as.data.frame(res_global),20)
-gg_plotCounts(rownames(res_global[1,]))
 
-```
 
+# Differential Expression
  
-## First approach is to use the whole dataset but make a contrast between WT Th17 cells and KO Th17 cells
+## Create a group variable that combines cell type and genotype to make individual contrasts for each cell type
 ```{r grouped_dds,eval=T}
 dds_subset_grouped<-dds_subset
 dds_subset_grouped$group <- factor(paste0(dds_subset_grouped$celltype, dds_subset_grouped$genotype))
 design(dds_subset_grouped) <- ~project + group
 dds_subset_grouped <- DESeq(dds_subset_grouped)
-resultsNames(dds_subset_grouped)
+#resultsNames(dds_subset_grouped)
+
+#th17
 summary(res_global_th17_raw<-results(dds_subset_grouped,contrast=c("group","th17KO","th17WT"),alpha=0.05))
 res_global_th17<-as.data.frame(res_global_th17_raw)
 res_global_th17$symbol<-mcols(dds_subset_grouped)$symbol
 stopifnot(all.equal(res_global_th17$symbol,symbols[match(rownames(res_global_th17),symbols$gene_id),"gene_name"]))
 #View(as.data.frame(res_th17))
-nrow(res_global_th17<-subset(res_global_th17,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
-res_global_th17<-res_global_th17[with(res_global_th17,order(padj)),] #sort based on padj
-head(as.data.frame(res_global_th17),20)
-gg_plotCounts(rownames(res_global_th17[1,]))
+#nrow(res_global_th17<-subset(res_global_th17,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
+#res_global_th17<-res_global_th17[with(res_global_th17,order(padj)),] #sort based on padj
+#head(as.data.frame(res_global_th17),20)
+#gg_plotCounts(rownames(res_global_th17[1,]))
 
 #tfh
 summary(res_global_tfh_raw<-results(dds_subset_grouped,contrast=c("group","tfhKO","tfhWT"),alpha=0.05))
 res_global_tfh<-as.data.frame(res_global_tfh_raw)
 res_global_tfh$symbol<-mcols(dds_subset_grouped)$symbol
 stopifnot(all.equal(res_global_tfh$symbol,symbols[match(rownames(res_global_tfh),symbols$gene_id),"gene_name"]))
-nrow(res_global_tfh<-subset(res_global_tfh,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
-res_global_tfh<-res_global_tfh[with(res_global_tfh,order(padj)),] #sort based on padj
-head(as.data.frame(res_global_tfh),10)
+#nrow(res_global_tfh<-subset(res_global_tfh,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
+#res_global_tfh<-res_global_tfh[with(res_global_tfh,order(padj)),] #sort based on padj
+#head(as.data.frame(res_global_tfh),10)
 
 #tfhth17
 summary(res_global_tfhth17_raw<-results(dds_subset_grouped,contrast=c("group","tfhth17KO","tfhth17WT"),alpha=0.05))
 res_global_tfhth17<-as.data.frame(res_global_tfhth17_raw)
 res_global_tfhth17$symbol<-mcols(dds_subset_grouped)$symbol
 stopifnot(all.equal(res_global_tfhth17$symbol,symbols[match(rownames(res_global_tfhth17),symbols$gene_id),"gene_name"]))
-nrow(res_global_tfhth17<-subset(res_global_tfhth17,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
-res_global_tfhth17<-res_global_tfhth17[with(res_global_tfhth17,order(padj)),] #sort based on padj
-head(as.data.frame(res_global_tfhth17),10)
+#nrow(res_global_tfhth17<-subset(res_global_tfhth17,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
+#res_global_tfhth17<-res_global_tfhth17[with(res_global_tfhth17,order(padj)),] #sort based on padj
+#head(as.data.frame(res_global_tfhth17),10)
 
 #tother
 summary(res_global_tother_raw<-results(dds_subset_grouped,contrast=c("group","totherKO","totherWT"),alpha=0.05))
 res_global_tother<-as.data.frame(res_global_tother_raw)
 res_global_tother$symbol<-mcols(dds_subset_grouped)$symbol
 stopifnot(all.equal(res_global_tother$symbol,symbols[match(rownames(res_global_tother),symbols$gene_id),"gene_name"]))
-nrow(res_global_tother<-subset(res_global_tother,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
-res_global_tother<-res_global_tother[with(res_global_tother,order(padj)),] #sort based on padj
-head(as.data.frame(res_global_tother),10)
+#nrow(res_global_tother<-subset(res_global_tother,abs(log2FoldChange) > log2(1.5) & padj <0.05 & baseMean > 10)) # subset to significant
+#res_global_tother<-res_global_tother[with(res_global_tother,order(padj)),] #sort based on padj
+#head(as.data.frame(res_global_tother),10)
 ```
 
-# Combine results from different cell types
-```{r}
-length(expressed_genes<-rownames(subset(results(dds_subset_grouped),baseMean > 10)))
-length(global_degs<-unique(c(rownames(res_global_th17), rownames(res_global_tfh), rownames(res_global_tfhth17), rownames(res_global_tother))))
+## Combine results from different cell types
+```{r combine_cell_subtypes,eval=T}
+#length(expressed_genes<-rownames(subset(results(dds_subset_grouped),baseMean > 10)))
+#length(global_degs<-unique(c(rownames(res_global_th17), rownames(res_global_tfh), rownames(res_global_tfhth17), rownames(res_global_tother))))
 
 res_global_th17_raw<-res_global_th17_raw[,c("baseMean","log2FoldChange","padj")]
 colnames(res_global_th17_raw)<-c("baseMean","log2FoldChange.th17","padj.th17")
@@ -505,116 +592,162 @@ colnames(res_global_tother_raw)<-paste0(colnames(res_global_tother_raw),".tother
 
 all.equal(rownames(res_global_th17_raw),rownames(res_global_tfh_raw))
 all.equal(rownames(res_global_tfhth17_raw),rownames(res_global_tother_raw))
+all.equal(rownames(res_global_tfhth17_raw),rownames(f_mean[rownames(res_global_tfhth17_raw),])) #add mean FPKM
 
-global_results<-cbind(res_global_th17_raw,res_global_tfh_raw,res_global_tfhth17_raw,res_global_tother_raw)
+
+global_results<-cbind(res_global_th17_raw,res_global_tfh_raw,res_global_tfhth17_raw,res_global_tother_raw,f_mean[rownames(res_global_tfhth17_raw),])
 global_results$symbol<-mcols(dds_subset_grouped)$symbol
 stopifnot(all.equal(global_results$symbol,symbols[match(rownames(global_results),symbols$gene_id),"gene_name"]))
 
-global_results<-global_results[global_degs,]  #subset to deg in one or more group
+
+dim(global_results<-global_results[global_results$baseMean > 0,])
+length(expressed_genes<-rownames(global_results))
+
+#global_results<-global_results[global_degs,]  #subset to deg in one or more group
 ```
 
-# Run GO analysis on each subset
-```{r}
+## Four way Venn on global_results 
+```{r four_way_venn,eval=T}
+length(n1<-rownames(subset(global_results, padj.th17<0.05 & abs(log2FoldChange.th17) > 1)))
+length(n2<-rownames(subset(global_results, padj.tfhth17<0.05 & abs(log2FoldChange.tfhth17) > 1)))
+length(n3<-rownames(subset(global_results, padj.tfh<0.05 & abs(log2FoldChange.tfh) > 1)))
+length(n4<-rownames(subset(global_results, padj.tother<0.05 & abs(log2FoldChange.tother) > 1)))
 
-bd<-bd[names(bd) %in% expressed_genes]
+
+grid.newpage()
+VennDiagram::draw.quad.venn(area1=length(n1),
+                            area2=length(n2),
+                            area3=length(n3),
+                            area4=length(n4),
+                            n12=length(intersect(n1,n2)),
+                            n13=length(intersect(n1,n3)),
+                            n14=length(intersect(n1,n4)),
+                            n23=length(intersect(n2,n3)),
+                            n24=length(intersect(n2,n4)),
+                            n34=length(intersect(n3,n4)),
+                            n123=length(intersect(intersect(n1,n2),n3)),
+                            n124=length(intersect(intersect(n1,n2),n4)),
+                            n134=length(intersect(intersect(n1,n3),n4)),
+                            n234=length(intersect(intersect(n2,n3),n4)),
+                            n1234=length(intersect(intersect(n1,n2),intersect(n3,n4))),
+                            fill=c("#F8766D","#00BFC4","#7CAE00","#C77CFF"),
+                            category=c("Th17","Th17-Tfh","Tfh","Other"))
+
+global_results[intersect(n1,n2)[!intersect(n1,n2) %in% union(n3,n4)],]
+```
+
+
+```{r up_v_dn,eval=T}
+#upregulated in 1 or more
+length(u1<-rownames(subset(global_results, log2FoldChange.th17 > 1 & padj.th17<0.05 )))
+length(u2<-rownames(subset(global_results, log2FoldChange.tfhth17 > 1 & padj.tfhth17<0.05 )))
+length(u3<-rownames(subset(global_results, log2FoldChange.tfh > 1 & padj.tfh<0.05 )))
+length(u4<-rownames(subset(global_results,log2FoldChange.tother > 1 & padj.tother<0.05 )))
+nrow(global_results_up<-global_results[unique(c(u1,u2,u3,u4)),])
+
+length(d1<-rownames(subset(global_results, log2FoldChange.th17 < -1 & padj.th17<0.05 )))
+length(d2<-rownames(subset(global_results, log2FoldChange.tfhth17 < -1 & padj.tfhth17<0.05 )))
+length(d3<-rownames(subset(global_results, log2FoldChange.tfh < -1 & padj.tfh<0.05 )))
+length(d4<-rownames(subset(global_results,log2FoldChange.tother < -1 & padj.tother<0.05 )))
+nrow(global_results_dn<-global_results[unique(c(d1,d2,d3,d4)),])
+
+
+```
+
+## Apply FPKM filter ?
+```{r fpkm_filter,eval=T}
+# strong up based on FPKMs in KO > 2.5
+length(su1<-rownames(subset(global_results, log2FoldChange.th17 > 1 & padj.th17<0.05 & fpkm_th17_KO > 2.5)))
+length(su2<-rownames(subset(global_results, log2FoldChange.tfhth17 > 1 & padj.tfhth17<0.05 & fpkm_tfhth17_KO > 2.5)))
+length(su3<-rownames(subset(global_results, log2FoldChange.tfh > 1 & padj.tfh<0.05 & fpkm_tfh_KO > 2.5)))
+length(su4<-rownames(subset(global_results,log2FoldChange.tother > 1 & padj.tother<0.05 & fpkm_tother_KO > 2.5)))
+nrow(global_results_strong_up<-global_results[unique(c(su1,su2,su3,su4)),])
+
+#strong dn based on FPKMs in KO > 2.5
+length(sd1<-rownames(subset(global_results, log2FoldChange.th17 < -1 & padj.th17<0.05 & fpkm_th17_WT > 2.5)))
+length(sd2<-rownames(subset(global_results, log2FoldChange.tfhth17 < -1 & padj.tfhth17<0.05 & fpkm_tfhth17_WT > 2.5)))
+length(sd3<-rownames(subset(global_results, log2FoldChange.tfh < -1 & padj.tfh<0.05 & fpkm_tfh_WT > 2.5)))
+length(sd4<-rownames(subset(global_results,log2FoldChange.tother < -1 & padj.tother<0.05 & fpkm_tother_WT > 2.5)))
+nrow(global_results_strong_dn<-global_results[unique(c(sd1,sd2,sd3,sd4)),])
+
+#counts<-counts(dds_subset_grouped,normalized=TRUE)
+#f<-fpkm(dds_subset_grouped,robust=T)
+#nrow(subset(global_results_subset,baseMean > 100))
+#global_results_subset[goiDF$gene_id,]
+#counts["ENSMUSG00000031530",]
+```
+
+
+## Run GO analysis on UP and DN regulated Genes
+```{r mgi_go,eval=T}
+length(bd<-bd[names(bd) %in% expressed_genes])
 head(bd)
 
-#global
+#global_results_up
+degs_global_results_up<-as.numeric(expressed_genes %in% rownames(global_results_up) )
+names(degs_global_results_up)<-expressed_genes
+table(degs_global_results_up)
+go_wall_global_results_up<-goseq(nullp(degs_global_results_up,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
+go_wall_global_results_up[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
 
-degs_global<-as.numeric(expressed_genes %in% global_degs)
-names(degs_global)<-expressed_genes
-table(degs_global)
-go_wall_global<-goseq(nullp(degs_global,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
-go_wall_global[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
-
-#th17
-degs_th17<-as.numeric(expressed_genes %in% rownames(res_global_th17) )
-names(degs_th17)<-expressed_genes
-table(degs_th17)
-go_wall_th17<-goseq(nullp(degs_th17,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
-go_wall_th17[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
-
-#tfhth17
-degs_tfhth17<-as.numeric(expressed_genes %in% rownames(res_global_tfhth17) )
-names(degs_tfhth17)<-expressed_genes
-table(degs_tfhth17)
-go_wall_tfhth17<-goseq(nullp(degs_tfhth17,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
-go_wall_tfhth17[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
-
-#tfh
-degs_tfh<-as.numeric(expressed_genes %in% rownames(res_global_tfh) )
-names(degs_tfh)<-expressed_genes
-table(degs_tfh)
-go_wall_tfh<-goseq(nullp(degs_tfh,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
-go_wall_tfh[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
-
-#tother
-degs_tother<-as.numeric(expressed_genes %in% rownames(res_global_tother) )
-names(degs_tother)<-expressed_genes
-table(degs_tother)
-go_wall_tother<-goseq(nullp(degs_tother,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
-go_wall_tother[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
+#global_results_dn
+degs_global_results_dn<-as.numeric(expressed_genes %in% rownames(global_results_dn) )
+names(degs_global_results_dn)<-expressed_genes
+table(degs_global_results_dn)
+go_wall_global_results_dn<-goseq(nullp(degs_global_results_dn,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
+go_wall_global_results_dn[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
 
 
+#strong up
+degs_global_strong_up<-as.numeric(expressed_genes %in% rownames(global_results_strong_up)) 
+names(degs_global_strong_up)<-expressed_genes
+table(degs_global_strong_up)
+go_wall_global_strong_up <-goseq(nullp(degs_global_strong_up,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
+go_wall_global_strong_up[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
 
-
-
+#strong dn
+degs_global_strong_dn<-as.numeric(expressed_genes %in% rownames(global_results_strong_dn)) 
+names(degs_global_strong_dn)<-expressed_genes
+table(degs_global_strong_dn)
+go_wall_global_strong_dn <-goseq(nullp(degs_global_strong_dn,bias.data=bd),gene2cat=mgi_go.list[expressed_genes])
+go_wall_global_strong_dn[1:20,c("category","term","over_represented_pvalue","numDEInCat","numInCat")]
 
 #figure
-head(go_wall_global,20) %>%
+GO_UP<-head(go_wall_global_strong_up,20) %>%
   dplyr::mutate(term=factor(term,levels=rev(term))) %>%
-ggplot(aes(x=term,y=-log10(over_represented_pvalue))) +
-  geom_bar(stat="identity",fill="red") +
+ggplot(aes(x=term,y=-log10(over_represented_pvalue),size=numDEInCat)) +
+  geom_point() + ylim(c(0,14))+
+ # geom_bar(stat="identity",fill="red") +
   coord_flip() + xlab("") +
   theme_bw() 
 
-listGO<-function(goid,dg=degs) {
-  print(as.data.frame(mgi_goterms[grep(goid,mgi_goterms$`GO ID`),1:3]))
-  tg<-as.data.frame(mgi_go[grep(goid,mgi_go$`GO ID`),"ensembl"])
-  tg<-tg[tg$ensembl %in% expressed_genes,,drop=F]
-  cat(paste0("There are ",nrow(tg)," expressed genes in this category.\n"))
-  idx<-match(tg$ensembl,symbols$gene_id)
-  tg$symbol<-symbols[idx,"gene_name"]
-  tg$deg<-dg[tg$ensembl]
-  tg<-tg[tg$deg==1,]
-  cat (paste0("The ",nrow(tg)," differentially expressed genes are:\n"))
-  return(tg)
-}
+GO_DN<-head(go_wall_global_strong_dn,20) %>%
+  dplyr::mutate(term=factor(term,levels=rev(term))) %>%
+ggplot(aes(x=term,y=-log10(over_represented_pvalue),size=numDEInCat)) +
+  geom_point() + ylim(c(0,14))+
+ # geom_bar(stat="identity",fill="red") +
+  coord_flip() + xlab("") +
+  theme_bw() 
+
+grid.arrange(GO_UP,GO_DN,ncol=1)
 
 
 #interesting gategories
-listGO("GO:0007186",dg=degs_tfh) #Ramp1, Ccr, Cxcr
-listGO("GO:2000320",dg=degs_tfh) # Foxp3
-listGO("GO:0043433",dg=degs_tfh) # Foxp3, Id2, Smad7, Sirt1
-listGO("GO:0007165",dg=degs_tfhth17) #Ptch1
+listGO("GO:0007186",dg=degs_global_strong_up) #Ramp1, Ccr, Cxcr
+listGO("GO:2000320",dg=degs_global_strong_up) # Foxp3
+listGO("GO:0043433",dg=degs_global_strong_up) # Foxp3, Id2, Smad7, Sirt1
+listGO("GO:0007165",dg=degs_global_strong_up) #Ptch1
+listGO("GO:2000320",degs_global_strong_up) #Smad7, Tbx21
 
-listGO("GO:0006260",dg=degs_tother) # Blm, Pola/d/q
-listGO("GO:0006270",dg=degs_tother) # Mcm/Orc
-
-```
-
-
-## Second approach is to subset the dataset to just Th17 cells and look for differences between WT and MT
-```{r}
-as.data.frame(colData(dds_th17<-dds_subset[,colData(dds_subset)$celltype == "th17"]))
-dds_th17<-estimateSizeFactors(dds_th17)
-design(dds_th17)<- ~project+genotype
-
-dds_th17<-DESeq(dds_th17)
-summary(res_th17<-results(dds_th17,alpha=0.05))
-
-res_th17$symbol<-mcols(dds_th17)$symbol
-stopifnot(all.equal(res_th17$symbol,symbols[match(rownames(res_th17),symbols$gene_id),"gene_name"]))
-#View(as.data.frame(res_th17))
-nrow(res_th17<-subset(res_th17,abs(log2FoldChange) > 1 & padj <0.05 & baseMean > 50)) # subset to significant
-res_th17<-res_global[with(res_th17,order(padj)),] #sort based on padj
-head(as.data.frame(res_th17),20)
-gg_plotCounts(rownames(res_th17[1,]))
+listGO("GO:0006260",dg=degs_global_strong_dn) # Blm, Pola/d/q
+listGO("GO:0006270",dg=degs_global_strong_dn) # Mcm/Orc
 
 ```
+
 
 # ChIP Analysis
 
+## Download Peaklist
 ```{r download_peaklist,eval=F}
 #ChIP Tracks
 #https://s3.msi.umn.edu/jenkinsm/th17_input_P038_Index7_S18.fastq.bigWig
@@ -622,6 +755,11 @@ gg_plotCounts(rownames(res_th17[1,]))
 
 length(th17n_Bcor_peaks<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/bardwell/th17_Bcor_WT_113017_peaks.narrowPeak"),name="th17")) 
 length(th17b_Bcor_peaks<-broadPeakToGRanges(url("https://s3.msi.umn.edu/jenkinsm/th17_bcor_083117_peaks.broadPeak"),name="th17")) 
+
+
+length(rorgt_peaks_rep1<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/jenkinsm/rorg_th17_rep1_100418_peaks.narrowPeak"),name="rorgt")) 
+length(rorgt_peaks_rep2<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/jenkinsm/rorg_th17_rep2_100418_peaks.narrowPeak"),name="rorgt")) 
+
 length(cgi<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/kybam/cpg_mm10.bed"),name="cgi",skip=1)) 
 seqlevelsStyle(cgi)<-"NCBI"
 
@@ -629,19 +767,264 @@ seqlevelsStyle(cgi)<-"NCBI"
 save(th17n_Bcor_peaks,th17b_Bcor_peaks,cgi,file="th17_peaklists.rdata")
 ```
 
-# Annotate Peaks
 
-```{r annotate_peaks,eval=T}
+## Annotate Peaks & Genes
+
+```{r annotate,eval=T}
 load("th17_peaklists.rdata")
-head(th17b_Bcor_peaks_anno<-annotate_peaks(th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=10000))
-```
 
-# Annotate Genes
-```{r}
+#How many Overlap CpG Islands?
 
-head(global_results<-annotate_genes(df=global_results,gr=th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=10000))
+length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])  # q< 0.05
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% cgi)
+
+  # Annotate Peaks
+head(th17b_Bcor_peaks_anno<-annotate_peaks(th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=5000))
+
+#head(global_results<-annotate_genes(df=global_results,gr=th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=10000))
 #View(global_results)
+
+#Annotate 157 Upregulated Genes
+head(global_results_up_chip<-annotate_genes(df=global_results_up,gr=th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103],tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=5000))
 write.csv(tibble::rownames_to_column(as.data.frame(global_results),var="Ensembl_Gene_ID"),file=paste0("global_results_with_ChIP_annotation_",ts,".csv"),quote=F,row.names = F)
+
+# How many bound by BCOR
+sum(!is.na(global_results_up_chip$maxscore))
+
+# strong chip up
+length(scu1<-rownames(subset(global_results_up_chip, log2FoldChange.th17 > 1 & padj.th17<0.05  & !is.na(maxscore))))
+length(scu2<-rownames(subset(global_results_up_chip, log2FoldChange.tfhth17 > 1 & padj.tfhth17<0.05 &  !is.na(maxscore))))
+length(scu3<-rownames(subset(global_results_up_chip, log2FoldChange.tfh > 1 & padj.tfh<0.05  & !is.na(maxscore))))
+length(scu4<-rownames(subset(global_results_up_chip,log2FoldChange.tother > 1 & padj.tother<0.05  & !is.na(maxscore))))
+nrow(global_results_strong_chip_up<-global_results[unique(c(scu1,scu2,scu3,scu4)),])
+
+#goiDF$gene_id %in% rownames(global_results_strong_chip_up)
+
 ```
 
+## Identify candidate Th17 drivers based on ontology and KO counts
+```{r find_candidates,eval=T}
+
+#Add Count Data to global_results_up_chip
+global_results_strong_chip_up_counts<-cbind(global_results_strong_chip_up,count_mean[rownames(global_results_strong_chip_up),])
+#head(global_results_strong_chip_up_counts)
+
+#subtype_specific_results<-subtype_specific_results[rownames(subtype_specific_results) %in% rownames(global_results_strong_chip_up),]
+#View(as.data.frame(global_results_strong_chip_up_counts))
+
+length(ssu1<-rownames(subset(global_results_strong_chip_up_counts, log2FoldChange.th17 > 1 & padj.th17<0.05 & count_th17_KO > 100)))
+length(ssu2<-rownames(subset(global_results_strong_chip_up_counts, log2FoldChange.tfhth17 > 1 & padj.tfhth17<0.05  & count_tfhth17_KO > 100)))
+length(ssu3<-rownames(subset(global_results_strong_chip_up_counts, log2FoldChange.tfh > 1 & padj.tfh<0.05 & count_tfh_KO > 100)))
+length(ssu4<-rownames(subset(global_results_strong_chip_up_counts, log2FoldChange.tother > 1 & padj.tother < 0.05 & count_tother_KO > 100 )))
+nrow(candidate_genes<-global_results_strong_chip_up_counts[unique(c(ssu1,ssu2,ssu3,ssu4)),])
+#nrow(strong_up<-subset(strong_up,baseMean.th17 > 100 | baseMean.tfhth17 > 100 | baseMean.tfh > 100 | baseMean.tother > 100))
+
+View(as.data.frame(candidate_genes))
+goiDF$gene_id %in% rownames(candidate_genes)
+#goiDF[!goiDF$gene_id %in% rownames(candidate_genes),]
+
+candidate_genes$ontology<-sapply(rownames(candidate_genes),geneToGOIDs)
+
+nrow(candidate_genes_onto<-candidate_genes[str_detect(tolower(candidate_genes$ontology),"transcription|phosphorylation"),])
+goiDF$gene_id %in% rownames(candidate_genes_onto)
+
+#View(as.data.frame(candidate_genes_onto[!rownames(candidate_genes_onto) %in% goiDF$gene_id,]))
+```
+
+## Heatmap for Candidate Drivers
+```{r goi_heatmap,eval=T}
+
+goi<-c("Lef1","Runx2","Id3","Foxo3","Bach2","Dusp4","Dusp6","Hipk2","Tsc22d3","Scml4","Ptch1")  #Add "Scml4" and remove c("Igf1r","Smad7","Ccnd2","Pip4k2a")
+goiDF<-symbols[symbols$gene_name %in% goi,]
+rownames(goiDF)<-goiDF$gene_name
+goiDF<-goiDF[goi,] #put in the original order
+goiDF$chip_score<-c(75,63,42,73,35,43,72,80,32,13,67)
+goiDF$ontology<-c(rep("Transcription Factor",5),rep("Phosphatase",2),"Serine/Threonine Kinase","Leucine Zipper Protein","Polycomb Group Protein","Sonic Hedgehog Receptor")
+
+
+dim(f_mean_log2<-log2(f_mean[goiDF$gene_id,]))
+rownames(f_mean_log2)<-symbols[match(rownames(f_mean_log2),symbols$gene_id),"gene_name"]
+
+temp2<-as.matrix(t(scale(t(f_mean_log2),center=T,scale=T)))
+
+# Make Heatmap
+# colors http://colorbrewer2.org/#type=qualitative&scheme=Dark2&n=6
+
+col_fun = circlize::colorRamp2(c(min(temp2[,1:8]), (min(temp2[,1:8])+max(temp2[,1:8]))/2, max(temp2[,1:8])), c('#ffeda0','#feb24c','#f03b20'))
+col_fun2 = circlize::colorRamp2(c(0,50,100), c('#f7fcb9','#addd8e','#31a354'))
+
+all.equal(rownames(temp2),rownames(goiDF)) #check to make sure temp2 is in the right order
+temp2<-cbind(temp2,goiDF[,c("chip_score","ontology")])
+
+a<-Heatmap(temp2[,c(which(str_detect(colnames(temp2),"^th17_WT")),which(str_detect(colnames(temp2),"^th17_KO")))], 
+                  column_title = "th17", rect_gp = gpar(col = "black", lwd = 0.5),
+                  cluster_rows = T, cluster_columns=FALSE,
+                  row_names_side = "left",col = col_fun, show_heatmap_legend = FALSE)
+b<-Heatmap(temp2[,c(which(str_detect(colnames(temp2),"^tfhth17_WT")),which(str_detect(colnames(temp2),"^tfhth17_KO")))], 
+                  column_title = "tfhth17", rect_gp = gpar(col = "black", lwd = 0.5),show_row_names=F,
+                  cluster_rows = T, cluster_columns=FALSE,
+                  row_names_side = "left",col = col_fun, show_heatmap_legend = FALSE)
+c<-Heatmap(temp2[,c(which(str_detect(colnames(temp2),"^tfh_WT")),which(str_detect(colnames(temp2),"^tfh_KO")))], 
+                  column_title = "tfh", rect_gp = gpar(col = "black", lwd = 0.5),show_row_names=F,
+                  cluster_rows = T, cluster_columns=FALSE,
+                  row_names_side = "left",col = col_fun, show_heatmap_legend = FALSE)
+d<-Heatmap(temp2[,c(which(str_detect(colnames(temp2),"^tother_WT")),which(str_detect(colnames(temp2),"^tother_KO")))], 
+                  column_title = "tother", rect_gp = gpar(col = "black", lwd = 0.5),show_row_names=F,
+                  cluster_rows = T, cluster_columns=FALSE, name = "Centered,\nScaled\nLog2 \nFPKM",
+                  row_names_side = "left",col = col_fun, show_heatmap_legend = TRUE)
+
+e<- Heatmap(temp2[,which(str_detect(colnames(temp2),"chip")),drop=F], name = "ChIP\nPeak\nScore",width = unit(0.5, "cm"),
+            rect_gp = gpar(col = "black", lwd = 0.5),col = col_fun2,show_row_names=F)
+f<-rowAnnotation(df = temp2[,which(str_detect(colnames(temp2),"ontology")),drop=F], 
+                 col = list(ontology = c("Transcription Factor" = '#1b9e77',
+                                     "Phosphatase" = '#d95f02',
+                                     "Serine/Threonine Kinase"='#7570b3',
+                                     "Leucine Zipper Protein"='#e7298a',
+                                     "Polycomb Group Protein"='#e41a1c',
+                                     "Sonic Hedgehog Receptor"='#e6ab02'))) 
+draw(a+b+c+d+e+f)
+```
+
+## Exon 9 & 10 Deletion Efficiency
+
+```{r exon910,eval=T}
+
+symbols[grep("Bcor",symbols$gene_name),]
+as.data.frame(transcripts[grep("Bcor",transcripts$symbol),])
+gr<-exons[["ENSMUST00000115513.8"]][7:10]
+strand(gr)<-"*"
+export(gr,"exons78910.bed")
+
+rtracklayer::import("../data/tfh_KO_rep1_P041_Pool1_Index8_q0_scaled_fwd.bigWig",selection=gr)
+files_known<-list.files("../data","*.bigWig")
+
+files<-c(paste0(colData(dds_subset)$sample_name[1:22],"_q0_scaled_fwd.bigWig"),paste0(colData(dds_subset)$sample_name[23:36],".bigWig"))
+bw<-BigWigFileList(paste0("../data/",files))
+names(bw)<-colData(dds_subset)$sample_name
+str(bw)
+#bw<-BigWigFileList("../data/tfh_KO_rep1_P041_Pool1_Index8_q0_scaled_fwd.bigWig")
+
+#http://lcolladotor.github.io/protocols/bigwig_DEanalysis/ (thanks to L. Collado-Torres) 
+counts <- matrix(NA, nrow = length(gr), ncol = length(bw))
+colnames(counts) <- names(bw)
+for(i in seq_len(length(bw))) {
+    coverage <- import(bw[[i]], as = 'RleList')$X
+    counts[, i] <- sum(Views(coverage, ranges(gr)))
+}
+## Divide by read length and round to integer numbers
+counts <- round(counts / 50, 0)
+
+## Explore a little portion of the count matrix 
+dim(counts)
+spl<-as.data.frame(t(counts))
+spl$ratio<-(spl[,3]+spl[,4])/(spl[,1]+spl[,2])
+spl$celltype<-colData(dds_subset)$celltype
+spl$genotype<-colData(dds_subset)$genotype
+spl<-spl[,c("ratio","celltype","genotype")]
+
+spl %>% 
+  mutate(celltype=factor(celltype,levels=c("th17","tfhth17","tfh","tother"))) %>% 
+  ggplot(aes(x=genotype,y=ratio))+
+    geom_point(position=position_jitter(w=0.1,h=0)) + ggtitle("Count Ratios for Exons 9 & 10 / Exons 7 & 8 ") +
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.35,color="blue",size=0.2) +
+    expand_limits(x=0, y = 0) + xlab("") +
+    facet_grid(~celltype) +
+    theme(legend.position="none") +
+    theme_bw()
+```
+
+
+
+ChIP Enrichment
+```{r blah4,eval=F}
+length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% cgi)
+length(cgi)-sum(th17b_Bcor_peaks %over% cgi)
+length(th17b_Bcor_peaks)-sum(th17b_Bcor_peaks %over% cgi)
+library("BSgenome.Mmusculus.UCSC.mm10.masked")
+mm10<-BSgenome.Mmusculus.UCSC.mm10.masked
+seqlevelsStyle(mm10)<-"NCBI"
+
+length(cgi<-keepStandardChromosomes(cgi,pruning.mode = "coarse"))
+length(th17b_Bcor_peaks<-keepStandardChromosomes(th17b_Bcor_peaks,pruning.mode = "coarse"))
+length(rorgt_peaks_rep1<-keepStandardChromosomes(rorgt_peaks_rep1,pruning.mode = "coarse"))
+
+numOverlaps(th17b_Bcor_peaks, cgi, count.once=TRUE)
+numOverlaps(randomizeRegions(th17b_Bcor_peaks,genome=mm10), cgi, count.once=TRUE)
+
+(pt <- overlapPermTest(A=th17b_Bcor_peaks, B=cgi, ntimes=20,genome=mm10,non.overlapping=TRUE))
+pt2 <- overlapPermTest(A=th17b_Bcor_peaks, B=rorgt_peaks_rep1, ntimes=50,genome=mm10)
+pt3 <- overlapPermTest(A=th17b_Bcor_peaks, B=rorgt_peaks_rep2, ntimes=20,genome=mm10)
+                      
+pt4 <- overlapPermTest(A=rorgt_peaks_rep1, B=cgi, ntimes=20,genome=mm10)
+```
+
+
+```{r blah5,eval=F}
+x<-apply(global_results[,10:17],1,sum)
+length(expressed_genes<-names(x[x>0]))
+length(expressed_genes<-rownames(dds))
+
+length(bcor_targets<-peaks_to_genes(th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=1000))
+length(cpg_targets<-peaks_to_genes(cgi,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=10000))
+length(rorgt_targets<-peaks_to_genes(rorgt_peaks_rep1,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=10000))
+length(expressed_genes)
+
+grid.newpage()
+draw.pairwise.venn(length(bcor_targets),length(cpg_targets),sum(bcor_targets %in% cpg_targets),
+                   fill=c("green","cyan"),
+                   category=c("BCOR targets","Cpg Islands"),
+                   inverted=F)
+
+(m<-matrix(c(sum(bcor_targets %in% cpg_targets), 
+         length(bcor_targets)-sum(bcor_targets %in% cpg_targets),
+         length(cpg_targets)-sum(bcor_targets %in% cpg_targets), 
+         length(expressed_genes)-length(bcor_targets)-length(cpg_targets)+sum(bcor_targets %in% cpg_targets)),
+         2, 2, dimnames = list(cpg_targets = c("true", "false"), bcor_targets = c("true", "false"))))
+fisher.test(m)$p.value
+
+grid.newpage()
+draw.pairwise.venn(length(bcor_targets),length(rorgt_targets),sum(bcor_targets %in% rorgt_targets),
+                   fill=c("green","cyan"),
+                   category=c("BCOR targets","RORgt Islands"),
+                   inverted=F)
+
+(m<-matrix(c(sum(bcor_targets %in% rorgt_targets), 
+         length(bcor_targets)-sum(bcor_targets %in% rorgt_targets),
+         length(rorgt_targets)-sum(bcor_targets %in% rorgt_targets), 
+         length(expressed_genes)-length(bcor_targets)-length(rorgt_targets)+sum(bcor_targets %in% rorgt_targets)),
+         2, 2, dimnames = list(rorgt_targets = c("true", "false"), bcor_targets = c("true", "false"))))
+fisher.test(m,workspace=30000000)$p.value
+
+```
+
+#promoters
+```{r blah6,eval=F}
+prom<-promoters(txdb,upstream=2000,downstream=200,use.names=T)
+seqlevelsStyle(prom)<-"NCBI"
+all.equal(rownames(prom),rownames(transcripts))
+prom$gene_id<-transcripts$gene_id
+prom$symbol<-transcripts$symbol
+
+prom_bcor<-prom[prom %over% th17b_Bcor_peaks]
+prom_cgi<-prom[prom %over% cgi]
+prom_157<-prom[prom$gene_id %in% rownames(global_results_up)]
+length(unique(prom_157$gene_id))
+length(unique(prom_157[ prom_157 %over% th17b_Bcor_peaks]$gene_id))
+length(unique(prom_157[prom_157 %over% cgi & prom %over% th17b_Bcor_peaks]$gene_id))
+
+
+length(unique(prom_bcor$symbol))
+goiDF$bound<-goiDF$gene_id %in% prom_bcor$gene_id
+goiDF$cgi<-goiDF$gene_id %in% prom_cgi$gene_id
+goiDF
+
+
+```
+
+# SessionInfo
+```{r sessioninfo,eval=T}
+sessionInfo()
+```
 
