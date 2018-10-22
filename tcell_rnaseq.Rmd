@@ -69,7 +69,14 @@ mcols(transcripts)<-data.frame(gene_id=transcripts$gene_id,stringsAsFactors = F)
 transcripts$symbol<-symbols$gene_name[match(transcripts$gene_id,symbols$gene_id)]
 transcripts$biotype<-symbols$gene_type[match(transcripts$gene_id,symbols$gene_id)]
 
+#promoters
+prom<-promoters(txdb,upstream=2000,downstream=200,use.names=T)
+seqlevelsStyle(prom)<-"NCBI"
+all.equal(rownames(prom),rownames(transcripts))
+prom$gene_id<-transcripts$gene_id
+prom$symbol<-transcripts$symbol
 
+#exons
 exons<-exonsBy(txdb,"tx",use.names=TRUE)
 #names(exons)<-substr(names(exons),1,18)
 #any more from MGI table?
@@ -83,7 +90,7 @@ exons<-exonsBy(txdb,"tx",use.names=TRUE)
 bl_mm10<-import("mm10.blacklist.bed")
 seqlevelsStyle(bl_mm10)<-"NCBI"
 
-save(symbols,transcripts,exons,bl_mm10,file="symbols_M16.rdata")
+save(symbols,transcripts,exons,prom,bl_mm10,file="symbols_M16.rdata")
 
 #load(url("https://s3.msi.umn.edu/jenkinsm/featureCounts_Gencode-M16_q0_Sun_Jan_21_2018_1932.rdata"))
 #load(url("https://s3.msi.umn.edu/gearhart/mgi91.rdata"))
@@ -406,6 +413,23 @@ count_mean <- counts(dds_subset,normalized=T) %>% as.data.frame %>%
 count_mean<-count_mean[,-1]
 colnames(count_mean)<-paste0("count_",colnames(count_mean))
 
+#Export Data for GEO
+norm_fpkm<-round(as.data.frame(fpkm(dds_subset,robust=TRUE)),3)
+colnames(norm_fpkm)<-paste0(colData(dds_subset)$celltype,"_",colData(dds_subset)$genotype,"_",colData(dds_subset)$rep)
+apply(norm_fpkm,2,sum)
+norm_fpkm$`Gene Symbol` <-symbols[match(rownames(norm_fpkm),symbols$gene_id),"gene_name"]
+dim(norm_fpkm<-tibble::rownames_to_column(norm_fpkm,var="Ensembl Gene ID"))
+dim(norm_fpkm<-norm_fpkm[,c(1,38,2:37)])
+write.csv(norm_fpkm,file=paste0("Normalized_FPKM_",ts,".csv"),quote=F,row.names = F)
+
+raw_counts<-as.data.frame(counts(dds_subset,normalized=F))
+colnames(raw_counts)<-paste0(colData(dds_subset)$celltype,"_",colData(dds_subset)$genotype,"_",colData(dds_subset)$rep)
+apply(raw_counts,2,sum)
+raw_counts$`Gene Symbol` <-symbols[match(rownames(raw_counts),symbols$gene_id),"gene_name"]
+dim(raw_counts<-tibble::rownames_to_column(raw_counts,var="Ensembl Gene ID"))
+dim(raw_counts<-raw_counts[,c(1,38,2:37)])
+write.csv(raw_counts,file=paste0("Raw_Counts_",ts,".csv"),quote=F,row.names = F)
+
 ```
 
 # EDA
@@ -654,7 +678,7 @@ nrow(global_results_dn<-global_results[unique(c(d1,d2,d3,d4)),])
 
 ```
 
-## Apply FPKM filter ?
+## Apply FPKM filter 
 ```{r fpkm_filter,eval=T}
 # strong up based on FPKMs in KO > 2.5
 length(su1<-rownames(subset(global_results, log2FoldChange.th17 > 1 & padj.th17<0.05 & fpkm_th17_KO > 2.5)))
@@ -762,6 +786,7 @@ length(rorgt_peaks_rep2<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/jenkins
 
 length(cgi<-narrowPeakToGRanges(url("https://s3.msi.umn.edu/kybam/cpg_mm10.bed"),name="cgi",skip=1)) 
 seqlevelsStyle(cgi)<-"NCBI"
+cgi<-keepStandardChromosomes(cgi,pruning.mode="coarse")
 
 #save Peaklists for Offline Analysis  
 save(th17n_Bcor_peaks,th17b_Bcor_peaks,cgi,file="th17_peaklists.rdata")
@@ -777,6 +802,12 @@ load("th17_peaklists.rdata")
 
 length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])  # q< 0.05
 sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% cgi)
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% cgi)/length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% prom)
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% prom)/length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])
+
+prom_cgi<-prom[prom %over% cgi]
+sum(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103] %over% prom_cgi)/length(th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103])
 
   # Annotate Peaks
 head(th17b_Bcor_peaks_anno<-annotate_peaks(th17b_Bcor_peaks,tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=5000))
@@ -786,7 +817,7 @@ head(th17b_Bcor_peaks_anno<-annotate_peaks(th17b_Bcor_peaks,tx=transcripts[trans
 
 #Annotate 157 Upregulated Genes
 head(global_results_up_chip<-annotate_genes(df=global_results_up,gr=th17b_Bcor_peaks[th17b_Bcor_peaks$q > 1.30103],tx=transcripts[transcripts$gene_id %in% expressed_genes],cutoff=5000))
-write.csv(tibble::rownames_to_column(as.data.frame(global_results),var="Ensembl_Gene_ID"),file=paste0("global_results_with_ChIP_annotation_",ts,".csv"),quote=F,row.names = F)
+#write.csv(tibble::rownames_to_column(as.data.frame(global_results),var="Ensembl_Gene_ID"),file=paste0("global_results_with_ChIP_annotation_",ts,".csv"),quote=F,row.names = F)
 
 # How many bound by BCOR
 sum(!is.na(global_results_up_chip$maxscore))
@@ -802,8 +833,72 @@ nrow(global_results_strong_chip_up<-global_results[unique(c(scu1,scu2,scu3,scu4)
 
 ```
 
+
+
+
+
+## Export Direct Targets to CSV and PDF
+```{r Supplemental_Table_1,eval=T}
+
+
+temp<-tibble::rownames_to_column(as.data.frame(global_results_strong_chip_up),var="Ensembl Gene Id")
+
+temp<-temp[,c("Ensembl Gene Id","symbol" ,"fpkm_th17_WT","fpkm_th17_KO","log2FoldChange.th17","padj.th17",
+                                          "fpkm_tfhth17_WT","fpkm_tfhth17_KO","log2FoldChange.tfhth17","padj.tfhth17" ,
+                                          "fpkm_tfh_WT", "fpkm_tfh_KO","log2FoldChange.tfh","padj.tfh",
+                                          "fpkm_tother_WT" ,  "fpkm_tother_KO","log2FoldChange.tother", "padj.tother")] 
+
+temp$log2FoldChange.th17<-round(temp$log2FoldChange.th17,3)
+temp$padj.th17<-round(temp$padj.th17,3)
+
+temp$log2FoldChange.tfhth17<-round(temp$log2FoldChange.tfhth17,3)
+temp$padj.tfhth17<-round(temp$padj.tfhth17,3)
+
+temp$log2FoldChange.tfh<-round(temp$log2FoldChange.tfh,3)
+temp$padj.tfh<-round(temp$padj.tfh,3)
+
+temp$log2FoldChange.tother<-round(temp$log2FoldChange.tother,3)
+temp$padj.tother<-round(temp$padj.tother,3)
+
+colnames(temp)<-c("Ensembl Gene Id","Gene Symbol" ,"FPKM Th17 WT","FPKM Th17 KO","Log2FoldChange Th17","padj Th17",
+                                          "FPKM Th17-Tfh_WT","FPKM Th17-Tfh KO","Log2FoldChange Th17-Tfh","padj Th17-Tfh" ,
+                                          "FPKM Tfh WT", "FPKM Tfh KO","Log2FoldChange Tfh","Padj Tfh",
+                                          "FPKM RORgt-CXCR5- WT",  "FPKM RORgt-CXCR5- KO", "log2FoldChange RORgt-CXCR5-", "padj RORgt-CXCR5-")
+
+
+write.csv(temp,file=paste0("Supplemental_Table_1_",ts,".csv"),quote=F,row.names = F)
+```
+
+
+## Make a Latex Version of Supplmental Table 1
+```{r tex,eval=F}
+temp1<-temp[,c("Ensembl Gene Id","symbol","fpkm_th17_WT","fpkm_th17_KO", "fpkm_tfhth17_WT","fpkm_tfhth17_KO",
+                                          "fpkm_tfh_WT", "fpkm_tfh_KO", "fpkm_tother_WT" ,  "fpkm_tother_KO")] 
+colnames(temp1)<-c("Ensembl Gene Id","Gene Symbol" ,"Th17 WT","Th17 KO", "Th17-Tfh_WT","Th17-Tfh KO",
+                                          "Tfh WT", "Tfh KO", "RORgt-CXCR5- WT", "RORgt-CXCR5- KO")
+
+temp2<-temp[,c("Ensembl Gene Id","symbol","log2FoldChange.th17","padj.th17", "log2FoldChange.tfhth17","padj.tfhth17" ,
+               "log2FoldChange.tfh","padj.tfh", "log2FoldChange.tother", "padj.tother")] 
+
+colnames(temp2)<-c("Ensembl Gene Id","Gene Symbol" ,"FPKM Th17 WT","FPKM Th17 KO","Log2FoldChange Th17","padj Th17",
+                                          "FPKM Th17-Tfh_WT","FPKM Th17-Tfh KO","Log2FoldChange Th17-Tfh","padj Th17-Tfh" ,
+                                          "FPKM Tfh WT", "FPKM Tfh KO","Log2FoldChange Tfh","Padj Tfh",
+                                          "FPKM RORgt-CXCR5- WT",  "FPKM RORgt-CXCR5- KO", "log2FoldChange RORgt-CXCR5-", "padj RORgt-CXCR5-")
+
+
+xtmp1 <- xtable(temp1, caption = "A \\code{longtable} spanning several pages")
+print(xtmp1, file="temp.tex", hline.after=c(-1, 0), tabular.environment = "longtable",floating=FALSE,include.rownames=FALSE)
+
+xtmp1<-xtable(temp1)
+#digits(xtmp1)<-c(0,0,2,-2)
+print(xtmp1, file="temp.tex", floating=FALSE,include.rownames=FALSE)
+system("pdflatex test6.tex")
+system(paste0("mv test6.pdf ","Supplmentary_Table_1_",ts,".pdf"))
+```
+
 ## Identify candidate Th17 drivers based on ontology and KO counts
 ```{r find_candidates,eval=T}
+
 
 #Add Count Data to global_results_up_chip
 global_results_strong_chip_up_counts<-cbind(global_results_strong_chip_up,count_mean[rownames(global_results_strong_chip_up),])
@@ -1001,11 +1096,7 @@ fisher.test(m,workspace=30000000)$p.value
 
 #promoters
 ```{r blah6,eval=F}
-prom<-promoters(txdb,upstream=2000,downstream=200,use.names=T)
-seqlevelsStyle(prom)<-"NCBI"
-all.equal(rownames(prom),rownames(transcripts))
-prom$gene_id<-transcripts$gene_id
-prom$symbol<-transcripts$symbol
+
 
 prom_bcor<-prom[prom %over% th17b_Bcor_peaks]
 prom_cgi<-prom[prom %over% cgi]
