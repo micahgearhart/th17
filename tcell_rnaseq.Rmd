@@ -1096,8 +1096,6 @@ fisher.test(m,workspace=30000000)$p.value
 
 #promoters
 ```{r blah6,eval=F}
-
-
 prom_bcor<-prom[prom %over% th17b_Bcor_peaks]
 prom_cgi<-prom[prom %over% cgi]
 prom_157<-prom[prom$gene_id %in% rownames(global_results_up)]
@@ -1110,7 +1108,6 @@ length(unique(prom_bcor$symbol))
 goiDF$bound<-goiDF$gene_id %in% prom_bcor$gene_id
 goiDF$cgi<-goiDF$gene_id %in% prom_cgi$gene_id
 goiDF
-
 
 ```
 
